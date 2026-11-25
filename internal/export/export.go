@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/RidgetopAi/backstory/internal/recall"
+	"github.com/RidgetopAi/backstory/internal/search"
 	"github.com/RidgetopAi/backstory/internal/store"
 )
 
@@ -99,7 +100,7 @@ func Build(p Params) (string, error) {
 	if p.Scope != nil {
 		anchor = anchor.WithScope(*p.Scope)
 	}
-	result, err := recall.Build(p.Store, anchor, p.Altitude, recallBudgetTokens, p.WorkspaceDirs)
+	result, err := recall.Build(p.Store, search.New(p.Store), anchor, p.Altitude, recallBudgetTokens, p.WorkspaceDirs)
 	if err != nil {
 		return "", fmt.Errorf("export: %w", err)
 	}

@@ -8,12 +8,14 @@
 package recall
 
 import (
+	"context"
 	"fmt"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/RidgetopAi/backstory/internal/block"
+	"github.com/RidgetopAi/backstory/internal/search"
 	"github.com/RidgetopAi/backstory/internal/store"
 )
 
@@ -24,7 +26,7 @@ import (
 // them all before the budget ever gets a chance to cut the list down.
 const maxProjectRecords = 500
 
-// maxTextResults bounds a free-text anchor's own FTS query the same way.
+// maxTextResults bounds a free-text anchor's own search the same way.
 const maxTextResults = 200
 
 // edgeWalkHops is how many hops a record anchor's edge walk follows, both
@@ -76,7 +78,7 @@ func RecordAnchor(idOrPrefix string) Anchor {
 	return Anchor{Kind: AnchorRecord, RecordID: idOrPrefix}
 }
 
-// TextAnchor anchors on a free-text FTS match, scoped to projectKey.
+// TextAnchor anchors on a free-text search, scoped to projectKey.
 func TextAnchor(projectKey, query string) Anchor {
 	return Anchor{Kind: AnchorText, ProjectKey: projectKey, Text: query}
 }
@@ -185,9 +187,10 @@ type Item struct {
 type Result struct {
 	Items    []Item
 	Rendered string
-	// Notice is set when a text anchor matched nothing and recall fell back to
-	// the location's latest handoff: "no match for <query>; latest handoff
-	// shown". Empty otherwise.
+	// Notice is set for a text anchor: "no match for <query>; latest handoff
+	// shown" when nothing matched and recall fell back to the location's
+	// latest handoff, then the Searcher's reason when it gave one (e.g.
+	// "embeddings off"), joined by "; ". Empty for other anchors.
 	Notice string
 }
 
@@ -195,13 +198,13 @@ type Result struct {
 // record anchor — annotates each with its trust tier and status, and
 // renders the result at altitude under budgetTokens, using the same
 // estimator the SessionStart block budgets against (block.EstimateTokens).
-// It only reads st. workspaces is the caller's already-resolved workspace
+// It only reads st; a text anchor's matches come from searcher. workspaces is the caller's already-resolved workspace
 // directory list (task 482b2320, decision f3fa04c7's clause 7): recall
 // never resolves workspace dirs itself (no project.DefaultWorkspaceDirs
 // call, no env read) — it only needs the list to pass through to
 // store.HandoffFreshness when annotating a handoff's possibly-stale status.
-func Build(st *store.Store, anchor Anchor, altitude Altitude, budgetTokens int, workspaces []string) (Result, error) {
-	recs, notice, err := resolve(st, anchor)
+func Build(st *store.Store, searcher search.Searcher, anchor Anchor, altitude Altitude, budgetTokens int, workspaces []string) (Result, error) {
+	recs, notice, err := resolve(st, searcher, anchor)
 	if err != nil {
 		return Result{}, err
 	}
@@ -231,10 +234,10 @@ func Build(st *store.Store, anchor Anchor, altitude Altitude, budgetTokens int, 
 // resolve turns anchor into an ordered record set, before status
 // annotation or altitude rendering: project and record anchors are already
 // in sequence order (RecordsForProjectAll / RecordsByIDs); a text anchor's
-// FTS match set is re-ordered into sequence order the same way, so every
+// search hits are re-ordered into sequence order the same way, so every
 // anchor kind's output obeys the one ordering rule (SCHEMA.md invariant
 // 10: order by sequence, never ts).
-func resolve(st *store.Store, anchor Anchor) ([]store.Record, string, error) {
+func resolve(st *store.Store, searcher search.Searcher, anchor Anchor) ([]store.Record, string, error) {
 	switch anchor.Kind {
 	case AnchorProject:
 		recs, err := projectRecords(st, anchor)
@@ -243,7 +246,7 @@ func resolve(st *store.Store, anchor Anchor) ([]store.Record, string, error) {
 		recs, err := resolveRecordAnchor(st, anchor.RecordID)
 		return recs, "", err
 	case AnchorText:
-		return resolveTextAnchor(st, anchor)
+		return resolveTextAnchor(st, searcher, anchor)
 	default:
 		return nil, "", fmt.Errorf("recall: unknown anchor kind %q", anchor.Kind)
 	}
@@ -319,67 +322,63 @@ func resolveRecordAnchor(st *store.Store, idOrPrefix string) ([]store.Record, er
 // words it happens to contain.
 var handoffKindWords = map[string]bool{"handoff": true, "handoffs": true, "resume": true}
 
-// resolveTextAnchor runs the FTS match (any query term, best bm25 first;
-// store.SearchRecordsInProject / SearchRecordsInScope), adds the location's
-// handoffs the index cannot see — those whose next text contains a query term
-// or when the query names the handoff kind — and re-orders the match set into
-// sequence order. When nothing matches it falls back to the location's latest
-// handoff and says so in the returned notice.
-func resolveTextAnchor(st *store.Store, anchor Anchor) ([]store.Record, string, error) {
-	var results []store.SearchResult
-	var err error
-	if anchor.Scope != nil {
-		results, err = st.SearchRecordsInScope(*anchor.Scope, anchor.Text, maxTextResults)
-	} else {
-		results, err = st.SearchRecordsInProject(anchor.ProjectKey, anchor.Text, maxTextResults)
-	}
+// resolveTextAnchor takes searcher's hits for the query (a Handoff's next
+// text included), adds every handoff at the location when the query names
+// the handoff kind, and re-orders the match set into sequence order. When
+// nothing matches it falls back to the location's latest handoff and says
+// so in the returned notice, which also carries the searcher's reason.
+func resolveTextAnchor(st *store.Store, searcher search.Searcher, anchor Anchor) ([]store.Record, string, error) {
+	found, err := searcher.Search(context.Background(), search.Query{
+		Text: anchor.Text, ProjectKey: anchor.ProjectKey, Scope: anchor.Scope, Limit: maxTextResults,
+	})
 	if err != nil {
 		return nil, "", fmt.Errorf("recall: text anchor: %w", err)
 	}
-	ids := make([]string, 0, len(results))
+	ids := make([]string, 0, len(found.Hits))
 	seen := map[string]bool{}
-	for _, r := range results {
-		ids = append(ids, r.ID)
-		seen[r.ID] = true
+	for _, h := range found.Hits {
+		ids = append(ids, h.RecordID)
+		seen[h.RecordID] = true
 	}
 
-	all, err := projectRecords(st, anchor)
-	if err != nil {
-		return nil, "", err
+	var notices []string
+	if namesHandoffKind(anchor.Text) || len(ids) == 0 {
+		all, err := projectRecords(st, anchor)
+		if err != nil {
+			return nil, "", err
+		}
+		var latest string
+		for _, rec := range all {
+			if rec.Kind != store.KindHandoff || rec.TombstonedAt != nil {
+				continue
+			}
+			if latest == "" {
+				latest = rec.ID
+			}
+			if namesHandoffKind(anchor.Text) && !seen[rec.ID] {
+				seen[rec.ID] = true
+				ids = append(ids, rec.ID)
+			}
+		}
+		if len(ids) == 0 && latest != "" {
+			ids = append(ids, latest)
+			notices = append(notices, fmt.Sprintf("no match for %s; latest handoff shown", anchor.Text))
+		}
 	}
-	terms := strings.Fields(strings.ToLower(anchor.Text))
-	var latest *store.Record
-	for i, rec := range all {
-		if rec.Kind != store.KindHandoff || rec.TombstonedAt != nil {
-			continue
-		}
-		if latest == nil {
-			latest = &all[i]
-		}
-		if !seen[rec.ID] && handoffMatches(rec, terms) {
-			seen[rec.ID] = true
-			ids = append(ids, rec.ID)
-		}
-	}
-
-	notice := ""
-	if len(ids) == 0 && latest != nil {
-		ids = append(ids, latest.ID)
-		notice = fmt.Sprintf("no match for %s; latest handoff shown", anchor.Text)
+	if found.Reason != "" {
+		notices = append(notices, found.Reason)
 	}
 	recs, err := st.RecordsByIDs(ids)
 	if err != nil {
 		return nil, "", fmt.Errorf("recall: text anchor: %w", err)
 	}
-	return recs, notice, nil
+	return recs, strings.Join(notices, "; "), nil
 }
 
-// handoffMatches reports whether a handoff answers terms (lower-cased query
-// words): one names the handoff kind, or appears in its next text.
-func handoffMatches(h store.Record, terms []string) bool {
-	next := strings.ToLower(h.Next)
-	for _, t := range terms {
-		if handoffKindWords[t] || (next != "" && strings.Contains(next, t)) {
+// namesHandoffKind reports whether query has a word naming the handoff kind.
+func namesHandoffKind(query string) bool {
+	for _, t := range strings.Fields(strings.ToLower(query)) {
+		if handoffKindWords[t] {
 			return true
 		}
 	}

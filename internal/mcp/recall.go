@@ -10,6 +10,7 @@ import (
 	"github.com/RidgetopAi/backstory/internal/ident"
 	"github.com/RidgetopAi/backstory/internal/project"
 	"github.com/RidgetopAi/backstory/internal/recall"
+	"github.com/RidgetopAi/backstory/internal/search"
 	"github.com/RidgetopAi/backstory/internal/store"
 	"github.com/RidgetopAi/backstory/internal/week"
 )
@@ -293,7 +294,7 @@ func handleRecall(st *store.Store, git project.Git, id ident.Identity, raw json.
 		return errResponse("internal", err.Error())
 	}
 
-	built, err := recall.Build(st, anchor, altitude, budgetTokens, workspaces)
+	built, err := recall.Build(st, search.New(st), anchor, altitude, budgetTokens, workspaces)
 	if err != nil {
 		return errResponse("internal", err.Error())
 	}

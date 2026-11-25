@@ -11,6 +11,7 @@ import (
 	"github.com/RidgetopAi/backstory/internal/payload"
 	"github.com/RidgetopAi/backstory/internal/project"
 	"github.com/RidgetopAi/backstory/internal/recall"
+	"github.com/RidgetopAi/backstory/internal/search"
 	"github.com/RidgetopAi/backstory/internal/store"
 	"github.com/RidgetopAi/backstory/internal/week"
 )
@@ -117,7 +118,7 @@ func (e *identityEnv) recallIDs(cwd string) []string {
 	st := e.open()
 	defer func() { _ = st.Close() }()
 	key := project.Key(cwd, project.RealGit{}, e.wsDirs)
-	res, err := recall.Build(st, recall.ProjectAnchor(key), recall.AltitudeFull, 8000, e.wsDirs)
+	res, err := recall.Build(st, search.New(st), recall.ProjectAnchor(key), recall.AltitudeFull, 8000, e.wsDirs)
 	if err != nil {
 		e.t.Fatalf("recall.Build: %v", err)
 	}

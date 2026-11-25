@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/RidgetopAi/backstory/internal/project"
+	"github.com/RidgetopAi/backstory/internal/search"
 	"github.com/RidgetopAi/backstory/internal/store"
 )
 
@@ -74,7 +75,7 @@ func TestWorkspaceHomedHandoffReportsGitDrift(t *testing.T) {
 	gitInDir(t, repo, "commit", "-q", "--allow-empty", "-m", "c2")
 	gitInDir(t, repo, "commit", "-q", "--allow-empty", "-m", "c3")
 
-	res, err := Build(st, ProjectAnchor(home), AltitudeFull, testBudget, []string{ws})
+	res, err := Build(st, search.New(st), ProjectAnchor(home), AltitudeFull, testBudget, []string{ws})
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}

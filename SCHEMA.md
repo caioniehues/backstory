@@ -103,7 +103,8 @@ CREATE TABLE projects (
   git_common_dir  TEXT,
   remote_url      TEXT,
   toplevel        TEXT NOT NULL,           -- fallback identity for non-git dirs
-  first_seen      INTEGER NOT NULL         -- unix nanoseconds, UTC
+  first_seen      INTEGER NOT NULL,        -- unix nanoseconds, UTC
+  remote_checked_at INTEGER                -- last time fillMissingRemotes found no remote; only gates that repair (migration 0021)
 );
 
 CREATE TABLE sessions (
@@ -119,6 +120,8 @@ CREATE TABLE sessions (
   ended_at            INTEGER,             -- unix nanoseconds, UTC
   origin              TEXT NOT NULL CHECK (origin IN ('live','backfilled','synced')),  -- 'synced': stub imported from a paired device (migration 0018)
   exit_kind           TEXT,                -- NULL while live or unobserved
+  parent_session_id   TEXT REFERENCES sessions(id),  -- the session that spawned this subagent run; NULL for most (migration 0008)
+  purged_at           INTEGER,             -- set when the Human purged this session's timeline; backfill never re-imports it (migration 0011)
   origin_device       TEXT                 -- NULL = this device (migration 0016)
 );
 CREATE INDEX sessions_project ON sessions(project_key);  -- per-project lookups in this-week (migration 0023)
@@ -154,6 +157,9 @@ CREATE TABLE records (
   expires_at     INTEGER,                     -- unix nanoseconds, UTC; claims and inferred drafts
   tombstoned_at  INTEGER,                     -- unix nanoseconds, UTC; human-only, the sole mutable column
   event_cursor   INTEGER NOT NULL DEFAULT 0,  -- MAX(timeline_events.id) at insert time; never a parameter
+  git_head       TEXT,                        -- full sha of HEAD in the writing session's repo at write; NULL outside git (migration 0009)
+  next           TEXT,                        -- a Handoff's optional one-line next step; NULL otherwise. "What must not be done" lives in text (migration 0013); a tombstone clears it with the text
+  origin_device  TEXT,                        -- NULL = written on this device (migration 0016)
   git_branch     TEXT                         -- branch checked out in the writing session's repo at write (migration 0026); NULL = unknown (old record, detached HEAD, non-git folder); immutable, synced
 );
 CREATE INDEX records_project ON records(project_key, ts);
@@ -167,6 +173,24 @@ CREATE TABLE edges (
                   'produced_outcome','contradicts')),
   declared_by  TEXT NOT NULL,               -- session id, 'human', or 'daemon'
   PRIMARY KEY (from_id, to_id, type)
+);
+
+CREATE TABLE backfill_cursors (         -- per-file backfill progress (migration 0004)
+  source       TEXT NOT NULL,             -- importer name, e.g. "claude"
+  path         TEXT NOT NULL,             -- absolute source file path
+  session_id   TEXT NOT NULL REFERENCES sessions(id),
+  last_uuid    TEXT,                      -- last transcript line imported
+  byte_offset  INTEGER NOT NULL DEFAULT 0,  -- how far into the file is already read
+  PRIMARY KEY (source, path)
+);
+
+CREATE TABLE purge_log (                -- COUNTS ONLY per purge, never content (migrations 0011, 0012)
+  id       INTEGER PRIMARY KEY,
+  ts       INTEGER NOT NULL,
+  scope    TEXT NOT NULL,
+  sessions INTEGER NOT NULL,
+  events   INTEGER NOT NULL,
+  records  INTEGER NOT NULL DEFAULT 0     -- records the purge tombstoned
 );
 
 CREATE TABLE settings (
@@ -427,10 +451,12 @@ ALTER TABLE sync_peers ADD COLUMN push_cursor INTEGER NOT NULL DEFAULT 0;  -- po
 CREATE TABLE sync_attempts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   ts INTEGER NOT NULL,                     -- unix nanoseconds, UTC
-  peer TEXT NOT NULL, device_id TEXT,
+  peer TEXT NOT NULL,                      -- the peer's name (or ssh host when unnamed)
+  device_id TEXT,                          -- the peer's device id, when known
   result TEXT NOT NULL CHECK (result IN ('ok','unreachable','error','paused')),
   detail TEXT NOT NULL DEFAULT '',
-  pulled INTEGER NOT NULL DEFAULT 0, pushed INTEGER NOT NULL DEFAULT 0
+  pulled INTEGER NOT NULL DEFAULT 0,
+  pushed INTEGER NOT NULL DEFAULT 0
 );
 ```
 

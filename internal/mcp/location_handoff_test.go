@@ -13,6 +13,7 @@ import (
 	"github.com/RidgetopAi/backstory/internal/ident"
 	"github.com/RidgetopAi/backstory/internal/payload"
 	"github.com/RidgetopAi/backstory/internal/project"
+	"github.com/RidgetopAi/backstory/internal/search"
 	"github.com/RidgetopAi/backstory/internal/store"
 	"github.com/RidgetopAi/backstory/internal/week"
 )
@@ -60,7 +61,7 @@ func (f *locFixture) handoff(dir, file, text string) string {
 		f.t.Fatalf("AppendEvent: %v", err)
 	}
 	raw, _ := json.Marshal(NoteParams{Kind: "handoff", Text: text})
-	resp := handleNote(f.st, f.git, store.Identity{Kind: store.IdentityAgent}, sid, key, dir, f.ws, raw, func() (bool, error) { return false, nil })
+	resp := handleNote(f.st, search.New(f.st), f.git, store.Identity{Kind: store.IdentityAgent}, sid, key, dir, f.ws, raw, func() (bool, error) { return false, nil })
 	if resp.Error != nil {
 		f.t.Fatalf("handleNote: %v", resp.Error)
 	}
@@ -74,7 +75,7 @@ func (f *locFixture) handoff(dir, file, text string) string {
 func (f *locFixture) recall(dir, projectRef string) RecallResult {
 	f.t.Helper()
 	raw, _ := json.Marshal(RecallParams{Project: projectRef})
-	resp := handleRecall(f.st, f.git, ident.Identity{CWD: dir, ProjectKey: f.key(dir)}, raw, f.ws)
+	resp := handleRecall(f.st, search.New(f.st), f.git, ident.Identity{CWD: dir, ProjectKey: f.key(dir)}, raw, f.ws)
 	if resp.Error != nil {
 		f.t.Fatalf("handleRecall: %v", resp.Error)
 	}
@@ -262,7 +263,7 @@ func TestNoteHandoffResultNamesVisibleAt(t *testing.T) {
 		t.Fatal(err)
 	}
 	raw, _ := json.Marshal(NoteParams{Kind: "handoff", Text: "h"})
-	resp := handleNote(f.st, f.git, store.Identity{Kind: store.IdentityAgent}, sid, key, f.demo, f.ws, raw, func() (bool, error) { return false, nil })
+	resp := handleNote(f.st, search.New(f.st), f.git, store.Identity{Kind: store.IdentityAgent}, sid, key, f.demo, f.ws, raw, func() (bool, error) { return false, nil })
 	if resp.Error != nil {
 		t.Fatalf("handleNote: %v", resp.Error)
 	}
@@ -308,7 +309,7 @@ func TestRecallFindsHandoffOfSessionThatEditedOnlyOutsideItsFolder(t *testing.T)
 	}
 	const marker = "Zqxmarkercam"
 	raw, _ := json.Marshal(NoteParams{Kind: "handoff", Text: "camera setup state " + marker, Next: "finish " + marker + " wiring"})
-	resp := handleNote(f.st, f.git, store.Identity{Kind: store.IdentityAgent}, sid, key, personal, f.ws, raw, func() (bool, error) { return false, nil })
+	resp := handleNote(f.st, search.New(f.st), f.git, store.Identity{Kind: store.IdentityAgent}, sid, key, personal, f.ws, raw, func() (bool, error) { return false, nil })
 	if resp.Error != nil {
 		t.Fatalf("handleNote: %v", resp.Error)
 	}
@@ -322,7 +323,7 @@ func TestRecallFindsHandoffOfSessionThatEditedOnlyOutsideItsFolder(t *testing.T)
 		"long query": "cameras RLC-810WA setup network wifi PoE " + marker + " install",
 	} {
 		rp, _ := json.Marshal(RecallParams{Query: q})
-		r := handleRecall(f.st, f.git, ident.Identity{CWD: personal, ProjectKey: key}, rp, f.ws)
+		r := handleRecall(f.st, search.New(f.st), f.git, ident.Identity{CWD: personal, ProjectKey: key}, rp, f.ws)
 		if r.Error != nil {
 			t.Fatalf("%s: handleRecall: %v", name, r.Error)
 		}

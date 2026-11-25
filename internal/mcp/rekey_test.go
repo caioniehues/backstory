@@ -10,6 +10,7 @@ import (
 
 	"github.com/RidgetopAi/backstory/internal/ident"
 	"github.com/RidgetopAi/backstory/internal/project"
+	"github.com/RidgetopAi/backstory/internal/search"
 	"github.com/RidgetopAi/backstory/internal/store"
 )
 
@@ -44,7 +45,7 @@ func TestNoteAndStatusSurviveAnotherProcessRekey(t *testing.T) {
 	sessions := NewSessionRegistry()
 	sockPath := filepath.Join(t.TempDir(), "sock")
 	serveTestDaemon(t, sockPath, resolver, func(id ident.Identity, conn net.Conn) {
-		ServeDaemonConn(id, conn, st, procfs, project.RealGit{}, nil, sessions, captureNeverOff, nil)
+		ServeDaemonConn(id, conn, st, search.New(st), procfs, project.RealGit{}, nil, sessions, captureNeverOff, nil)
 	})
 	shim := dialShim(t, sockPath)
 

@@ -11,6 +11,7 @@ import (
 	"github.com/RidgetopAi/backstory/internal/ident"
 	"github.com/RidgetopAi/backstory/internal/payload"
 	"github.com/RidgetopAi/backstory/internal/project"
+	"github.com/RidgetopAi/backstory/internal/search"
 	"github.com/RidgetopAi/backstory/internal/store"
 )
 
@@ -76,7 +77,7 @@ var errCaptureOff = errors.New("mcp: capture is off, no session started")
 // post-tool-use` already refuses to record on, passed in by daemon.go
 // rather than resolved here so this package never has to know how the flag
 // file's path is derived.
-func ServeDaemonConn(id ident.Identity, conn net.Conn, st *store.Store, procfs ident.ProcFS, git project.Git, logger *log.Logger, sessions *SessionRegistry, captureOff func() (bool, error), workspaces []string) {
+func ServeDaemonConn(id ident.Identity, conn net.Conn, st *store.Store, searcher search.Searcher, procfs ident.ProcFS, git project.Git, logger *log.Logger, sessions *SessionRegistry, captureOff func() (bool, error), workspaces []string) {
 	// The first request line decides the connection's identity: a plugin's
 	// harness-reported location (location.go) selects the project; every
 	// other case is the observed /proc identity, exactly as before. The
@@ -98,7 +99,7 @@ func ServeDaemonConn(id ident.Identity, conn net.Conn, st *store.Store, procfs i
 
 	if declinesSession(first) {
 		identity := storeIdentity(id, "")
-		resp := dispatchDaemonRequest(first, st, procfs, identity, "", id, git, captureOff, workspaces)
+		resp := dispatchDaemonRequest(first, st, searcher, procfs, identity, "", id, git, captureOff, workspaces)
 		if b, err := json.Marshal(resp); err == nil {
 			_, _ = conn.Write(append(b, '\n'))
 		}
@@ -132,7 +133,7 @@ func ServeDaemonConn(id ident.Identity, conn net.Conn, st *store.Store, procfs i
 	identity := storeIdentity(id, sessionID)
 
 	for line, more := first, hasFirst; more; {
-		resp := dispatchDaemonRequest(line, st, procfs, identity, sessionID, id, git, captureOff, workspaces)
+		resp := dispatchDaemonRequest(line, st, searcher, procfs, identity, sessionID, id, git, captureOff, workspaces)
 		b, err := json.Marshal(resp)
 		if err != nil {
 			logf(logger, "mcp: marshal daemon response: %v", err)
@@ -292,7 +293,7 @@ func recordSessionGitState(st *store.Store, git project.Git, sessionID, cwd, pha
 	}
 }
 
-func dispatchDaemonRequest(line []byte, st *store.Store, procfs ident.ProcFS, identity store.Identity, sessionID string, id ident.Identity, git project.Git, captureOff func() (bool, error), workspaces []string) DaemonResponse {
+func dispatchDaemonRequest(line []byte, st *store.Store, searcher search.Searcher, procfs ident.ProcFS, identity store.Identity, sessionID string, id ident.Identity, git project.Git, captureOff func() (bool, error), workspaces []string) DaemonResponse {
 
 	var req DaemonRequest
 	if err := json.Unmarshal(line, &req); err != nil {
@@ -300,11 +301,11 @@ func dispatchDaemonRequest(line []byte, st *store.Store, procfs ident.ProcFS, id
 	}
 	switch req.Method {
 	case daemonMethodNote:
-		return handleNote(st, git, identity, sessionID, id.ProjectKey, id.CWD, workspaces, req.Params, captureOff)
+		return handleNote(st, searcher, git, identity, sessionID, id.ProjectKey, id.CWD, workspaces, req.Params, captureOff)
 	case daemonMethodStatus:
 		return handleStatus(st, id, sessionID, captureOff)
 	case daemonMethodRecall:
-		return handleRecall(st, git, id, req.Params, workspaces)
+		return handleRecall(st, searcher, git, id, req.Params, workspaces)
 	case daemonMethodConfirm:
 		return handleConfirm(st, identity, sessionID, id.ProjectKey, req.Params)
 	case daemonMethodTimeline:

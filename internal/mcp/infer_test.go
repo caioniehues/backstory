@@ -10,6 +10,7 @@ import (
 
 	"github.com/RidgetopAi/backstory/internal/ident"
 	"github.com/RidgetopAi/backstory/internal/project"
+	"github.com/RidgetopAi/backstory/internal/search"
 	"github.com/RidgetopAi/backstory/internal/store"
 )
 
@@ -73,7 +74,7 @@ func (f *inferFixture) session(t *testing.T, cwd string) *Server {
 	sessions := NewSessionRegistry()
 	sockPath := filepath.Join(t.TempDir(), "sock")
 	serveTestDaemon(t, sockPath, resolver, func(id ident.Identity, conn net.Conn) {
-		ServeDaemonConn(id, conn, f.st, procfs, project.RealGit{}, nil, sessions, captureNeverOff, f.workspaces)
+		ServeDaemonConn(id, conn, f.st, search.New(f.st), procfs, project.RealGit{}, nil, sessions, captureNeverOff, f.workspaces)
 	})
 	return dialShim(t, sockPath)
 }

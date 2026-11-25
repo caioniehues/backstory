@@ -12,6 +12,7 @@ import (
 	"github.com/RidgetopAi/backstory/internal/ident"
 	"github.com/RidgetopAi/backstory/internal/mcp"
 	"github.com/RidgetopAi/backstory/internal/project"
+	"github.com/RidgetopAi/backstory/internal/search"
 	"github.com/RidgetopAi/backstory/internal/socket"
 	"github.com/RidgetopAi/backstory/internal/store"
 )
@@ -46,7 +47,7 @@ func TestHandoffNextRoundTripsMCPToThisWeekJSON(t *testing.T) {
 	sockPath := filepath.Join(t.TempDir(), "sock")
 	srv, err := socket.Listen(sockPath, resolver, func(id ident.Identity, conn net.Conn) {
 		defer func() { _ = conn.Close() }()
-		mcp.ServeDaemonConn(id, conn, st, procfs, project.RealGit{}, nil, sessions, func() (bool, error) { return false, nil }, nil)
+		mcp.ServeDaemonConn(id, conn, st, search.New(st), procfs, project.RealGit{}, nil, sessions, func() (bool, error) { return false, nil }, nil)
 	})
 	if err != nil {
 		t.Fatalf("socket.Listen: %v", err)

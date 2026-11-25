@@ -3,6 +3,7 @@ package mcp
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -171,5 +172,28 @@ func TestRelatedDecisionsWritesNoEdge(t *testing.T) {
 	}
 	if got := count(); got != before {
 		t.Errorf("edges %d -> %d; the lookup must not write edges", before, got)
+	}
+}
+
+// About-path matches come first even with no word in common, text matches
+// fill the rest, only Decisions count, and the total is capped.
+func TestRelatedDecisionsAboutFirstThenTextDecisionsOnlyCapped(t *testing.T) {
+	e := newRelatedEnv(t)
+	byAbout1 := e.decision("render the panel with QML", "db/schema.sql")
+	byAbout2 := e.decision("keep the bar widget small", "db/schema.sql")
+	e.note(map[string]any{"kind": "note", "text": "wombat storage engine notes"})
+	e.note(map[string]any{"kind": "handoff", "text": "wombat storage engine handoff"})
+	byText := e.decision("wombat storage engine benchmark")
+	e.decision("wombat storage engine fallback")
+
+	r := e.note(map[string]any{"kind": "decision", "text": "wombat storage engine", "about": []string{"db/schema.sql"}})
+	got := make([]string, len(r.RelatedDecisions))
+	for i, d := range r.RelatedDecisions {
+		got[i] = d.ID
+	}
+	// about matches newest first, then the best text match (equal bm25, so
+	// the earlier decision).
+	if want := []string{byAbout2, byAbout1, byText}; !slices.Equal(got, want) {
+		t.Fatalf("related = %v, want %v", got, want)
 	}
 }

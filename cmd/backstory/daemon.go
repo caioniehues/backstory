@@ -20,6 +20,7 @@ import (
 	"github.com/RidgetopAi/backstory/internal/ident"
 	"github.com/RidgetopAi/backstory/internal/mcp"
 	"github.com/RidgetopAi/backstory/internal/project"
+	"github.com/RidgetopAi/backstory/internal/search"
 	"github.com/RidgetopAi/backstory/internal/socket"
 	"github.com/RidgetopAi/backstory/internal/store"
 	omausage "github.com/RidgetopAi/backstory/internal/usage"
@@ -133,11 +134,12 @@ func runDaemon(_ []string, stdout, stderr io.Writer) int {
 	}
 
 	sessions := mcp.NewSessionRegistry()
+	searcher := search.New(st)
 	srv, err := socket.Listen(sockPath, resolver, func(id ident.Identity, conn net.Conn) {
 		defer func() { _ = conn.Close() }()
 		logIdentity(logger, id)
 		testSlowHandler()
-		mcp.ServeDaemonConn(id, conn, st, procfs, project.RealGit{}, logger, sessions, captureOff, workspaceDirs)
+		mcp.ServeDaemonConn(id, conn, st, searcher, procfs, project.RealGit{}, logger, sessions, captureOff, workspaceDirs)
 	})
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "backstory daemon:", err)

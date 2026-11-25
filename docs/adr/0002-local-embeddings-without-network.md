@@ -1,0 +1,3 @@
+# Local GPU embeddings go through a CLI or unix socket, never network
+
+Embeddings are computed on the local GPU. Backstory reaches the model either by running a local CLI once per batch or by talking to a long-running server on a unix socket. It never uses localhost HTTP or TCP. This keeps `ops/nonetwork_test.go` and the README's "no network of its own" promise true. The obvious route, ollama on localhost, is easier, but it would mean weakening the test and the promise. Loopback TCP is a fallback only if research finds no runtime for the AMD RX 7800 XT that offers either a CLI or a unix socket. Even then, the fallback must amend the test explicitly and must not quietly bypass it.

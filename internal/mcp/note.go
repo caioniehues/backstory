@@ -115,7 +115,7 @@ const relatedMessage = "these current decisions may be about the same thing: if 
 
 // relatedDecisions looks up the candidates for a just-written decision:
 // current Decisions in its Project sharing an about path (most shared
-// first), then those a text search on its text finds, never the decision
+// first), then those a search on its text's key words finds, never the decision
 // itself or the one it supersedes. The search's reason is ignored.
 func relatedDecisions(st *store.Store, searcher search.Searcher, rec store.Record, supersedes string) ([]RelatedDecision, error) {
 	skip := map[string]bool{rec.ID: true}
@@ -139,7 +139,8 @@ func relatedDecisions(st *store.Store, searcher search.Searcher, rec store.Recor
 	if need := MaxRelatedDecisions - len(ids); need > 0 {
 		found, err := searcher.Search(context.Background(), search.Query{
 			Text: rec.Text, ProjectKey: rec.ProjectKey,
-			Kinds: []store.RecordKind{store.KindDecision}, CurrentOnly: true,
+			Kinds: []store.RecordKind{store.KindDecision}, CurrentOnly: true, KeyTermsOnly: true,
+			// skip holds ids the merge drops, so fetch that many more.
 			Limit: need + len(skip),
 		})
 		if err != nil {

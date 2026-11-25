@@ -341,6 +341,9 @@ func handleRecall(st *store.Store, searcher search.Searcher, git project.Git, id
 		if err != nil {
 			return errResponse("internal", err.Error())
 		}
+		if built.Notice != "" {
+			msg += "; " + built.Notice
+		}
 		result.Message = msg
 	}
 

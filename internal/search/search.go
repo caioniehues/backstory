@@ -44,6 +44,9 @@ type Query struct {
 	CurrentOnly bool
 	// Limit caps the hits; zero or less returns none.
 	Limit int
+	// KeyTermsOnly searches by Text's distinctive terms whatever its length
+	// (store.SearchFilter.KeyTermsOnly).
+	KeyTermsOnly bool
 }
 
 // Hit is one Record a Query found.
@@ -91,6 +94,7 @@ func (s *searcher) Search(ctx context.Context, q Query) (Result, error) {
 	}
 	ids, err := s.st.SearchText(q.Text, store.SearchFilter{
 		ProjectKey: q.ProjectKey, Scope: q.Scope, Kinds: q.Kinds, CurrentOnly: q.CurrentOnly, Limit: q.Limit,
+		KeyTermsOnly: q.KeyTermsOnly,
 	})
 	if err != nil {
 		return Result{}, fmt.Errorf("search: %w", err)

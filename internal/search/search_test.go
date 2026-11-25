@@ -156,3 +156,13 @@ func TestQueryIsTextOrRecordNotBoth(t *testing.T) {
 		t.Fatal("want an error for a query with both text and a Record id")
 	}
 }
+
+func TestKeyTermsOnlyReachesTheTextSide(t *testing.T) {
+	e := newEnv(t)
+	sqlite := e.insert("proj-a", store.KindDecision, "keep SQLite as the store", "")
+	e.insert("proj-a", store.KindDecision, "use Postgres for reports", "")
+	got := ids(e.search(Query{Text: "Use SQLite", ProjectKey: "proj-a", KeyTermsOnly: true, Limit: 10}).Hits)
+	if !slices.Equal(got, []string{sqlite}) {
+		t.Fatalf("hits = %v, want only [%s]", got, sqlite)
+	}
+}

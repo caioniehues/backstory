@@ -263,7 +263,7 @@ import writes nothing and reports `paused`.
 ```sql
 CREATE TABLE record_embeddings (
   record_id  TEXT PRIMARY KEY REFERENCES records(id),
-  model      TEXT NOT NULL,     -- fingerprint: model file sha256 + prompt-template version + dim
+  model      TEXT NOT NULL,     -- fingerprint: model file sha256 + prompt-template version + backend + dim
   dim        INTEGER NOT NULL,
   vec        BLOB NOT NULL      -- float32 × dim
 );
@@ -277,10 +277,13 @@ of `export`. Backups and restore carry it as part of the DB file. The write is o
 statement, `INSERT … SELECT … FROM records WHERE id = ? AND tombstoned_at IS NULL …
 ON CONFLICT(record_id) DO UPDATE`, so a vector can't bring back a forgotten Record. A model
 change re-embeds by upsert, and the Search seam ignores rows whose `model`/`dim` don't match
-the query. `tombstoneRecordTx`, the body that Delete, Purge and synced tombstones share,
+the query. The backend is part of the fingerprint because the same file gives slightly different
+vectors on Vulkan and HIP (cos ≥ 0.9998, #19), so a backend switch re-embeds instead of mixing. `tombstoneRecordTx`, the body that Delete, Purge and synced tombstones share,
 deletes the row in the same transaction as the `records_fts` scrub. The opt-in switch is
 in Device-local, never-synced `settings` keys (`embed.runtime`, `embed.model`,
-`embed.device`, `embed.drain_lease`).
+`embed.device`, `embed.drain_lease`). `embed.device` holds a stable match (device name or PCI
+address, e.g. `0000:03:00.0`), never a backend index: Vulkan indices change between boots (#19). It
+is resolved to an index at each start, and embedding refuses to run if it doesn't resolve.
 
 ## Invariants the store enforces
 

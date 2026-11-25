@@ -12,7 +12,7 @@ import (
 // walkthrough on 7c4dfc90, PLAN.md §Phase 1 critic T2): a whole-second
 // timestamp formatted as RFC3339Nano ("...22Z") sorts AFTER a timestamp
 // 100ms later ("...22.1Z") as a TEXT string, even though it is earlier as a
-// time. Both the rate-cap window (`ts >= ?`) and SearchRecords' rank-tie
+// time. Both the rate-cap window (`ts >= ?`) and SearchText's rank-tie
 // order compare ts; both must treat the whole-second record as EARLIER.
 //
 // The fixture is anchored at the UNIX EPOCH (wholeSecond = 1970-01-01
@@ -62,20 +62,13 @@ func TestTsOrderingWholeSecondVsPlus100ms(t *testing.T) {
 		}
 	})
 
-	t.Run("SearchRecords ordering", func(t *testing.T) {
-		results, err := s.SearchRecords("shared", 10)
+	t.Run("SearchText ordering", func(t *testing.T) {
+		got, err := s.SearchText("shared", SearchFilter{Scope: sessionScope(sessionID), Limit: 10})
 		if err != nil {
-			t.Fatalf("SearchRecords: %v", err)
+			t.Fatalf("SearchText: %v", err)
 		}
-		if len(results) != 2 {
-			t.Fatalf("SearchRecords(%q) returned %d results, want 2", "shared", len(results))
-		}
-		if results[0].ID != earlierID || results[1].ID != laterID {
-			t.Fatalf("SearchRecords order = [%s, %s], want [%s, %s] (whole-second record first, as the earlier one)",
-				results[0].ID, results[1].ID, earlierID, laterID)
-		}
-		if !results[0].TS.Before(results[1].TS) {
-			t.Fatalf("SearchRecords[0].TS = %v, want strictly before SearchRecords[1].TS = %v", results[0].TS, results[1].TS)
+		if len(got) != 2 || got[0] != earlierID || got[1] != laterID {
+			t.Fatalf("SearchText order = %v, want [%s %s] (whole-second record first, as the earlier one)", got, earlierID, laterID)
 		}
 	})
 }

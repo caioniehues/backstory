@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -223,7 +224,7 @@ func buildV1Fixture(t *testing.T, path string) {
 		t.Fatalf("seed v1 records: %v", err)
 	}
 	// rec2 is NOT tombstoned: it exercises clause 3's requirement that a
-	// live pre-migration record is still findable by SearchRecords after
+	// live pre-migration record is still matched by the FTS index after
 	// migrating, i.e. records_fts's external-content rowid link to records
 	// survives the create-copy-drop-rename rewrite. migration 0001's
 	// records_ai AFTER INSERT trigger populates records_fts for it.
@@ -294,21 +295,11 @@ func TestMigrationV2AppliesOnV1Fixture(t *testing.T) {
 	}
 
 	// Clause 3: a non-tombstoned pre-migration record (rec2) is still
-	// returned by SearchRecords after migrating — proof that records_fts's
+	// matched by the FTS index after migrating — proof that records_fts's
 	// external-content rowid link to records survived the create-copy-
 	// drop-rename rewrite of the records table.
-	results, err := s.SearchRecords("searchable", 10)
-	if err != nil {
-		t.Fatalf("SearchRecords after migrating a v1 fixture: %v", err)
-	}
-	var foundRec2 bool
-	for _, r := range results {
-		if r.ID == "rec2" {
-			foundRec2 = true
-		}
-	}
-	if !foundRec2 {
-		t.Errorf("SearchRecords(%q) after migrating a v1 fixture = %+v, want rec2 among the results (FTS rowid must survive the migration)", "searchable", results)
+	if got := ftsIDs(t, s, "searchable"); !slices.Contains(got, "rec2") {
+		t.Errorf("FTS matches for %q after migrating a v1 fixture = %v, want rec2 among them (FTS rowid must survive the migration)", "searchable", got)
 	}
 }
 

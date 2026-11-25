@@ -40,11 +40,14 @@ type SearchFilter struct {
 	CurrentOnly bool
 	// Limit caps how many ids come back; zero or less returns none.
 	Limit int
+	// KeyTermsOnly reduces the text to its distinctive terms whatever its
+	// length, instead of choosing the rule by length (searchTerms).
+	KeyTermsOnly bool
 }
 
 // SearchText returns the ids of the Records matching text under f, best
 // first. A Record matches when its text matches any of text's terms by full
-// text (best bm25 first, ties earliest first by ts). A Handoff whose next
+// text (best bm25 first, ties newest first by ts). A Handoff whose next
 // step contains a term, case-insensitively, also matches: those follow the
 // full-text matches, newest first by sequence. Any text is safe: it never
 // reaches FTS5's query parser except as quoted literals.
@@ -52,7 +55,7 @@ func (s *Store) SearchText(text string, f SearchFilter) ([]string, error) {
 	if f.Limit <= 0 {
 		return nil, nil
 	}
-	terms := searchTerms(text)
+	terms := searchTerms(text, f.KeyTermsOnly)
 	if len(terms) == 0 {
 		return nil, nil
 	}
@@ -70,7 +73,7 @@ func (s *Store) SearchText(text string, f SearchFilter) ([]string, error) {
 	rows, err := s.db.Query(`SELECT r.id FROM records_fts
 		JOIN records r ON r.rowid = records_fts.rowid
 		WHERE records_fts MATCH ? AND `+where+`
-		ORDER BY rank, r.ts ASC LIMIT ?`, ftsArgs...)
+		ORDER BY rank, r.ts DESC LIMIT ?`, ftsArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("store: search text: %w", err)
 	}
@@ -175,15 +178,15 @@ func (s *Store) searchWhere(f SearchFilter) (where string, args []any, ok bool) 
 	return strings.Join(conds, " AND "), args, true
 }
 
-// searchTerms is the rule turning search text into terms, chosen by length.
-// Short text (at most SearchShortTextTokens tokens) keeps every
-// whitespace-separated token verbatim, so `wobble-party` and hashes match
-// exactly. Long text keeps only its distinctive terms: runs of letters and
-// digits of at least SearchMinTermRunes, lower-cased, deduplicated, at most
-// SearchMaxTerms.
-func searchTerms(text string) []string {
+// searchTerms is the rule turning search text into terms, chosen by length
+// unless keyTermsOnly. Short text (at most SearchShortTextTokens tokens)
+// keeps every whitespace-separated token verbatim, so `wobble-party` and
+// hashes match exactly. Long text, or any text when keyTermsOnly, keeps only
+// its distinctive terms: runs of letters and digits of at least
+// SearchMinTermRunes, lower-cased, deduplicated, at most SearchMaxTerms.
+func searchTerms(text string, keyTermsOnly bool) []string {
 	fields := strings.Fields(text)
-	if len(fields) <= SearchShortTextTokens {
+	if !keyTermsOnly && len(fields) <= SearchShortTextTokens {
 		return fields
 	}
 	words := strings.FieldsFunc(strings.ToLower(text), func(r rune) bool {

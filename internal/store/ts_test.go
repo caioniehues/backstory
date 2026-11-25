@@ -67,8 +67,8 @@ func TestTsOrderingWholeSecondVsPlus100ms(t *testing.T) {
 		if err != nil {
 			t.Fatalf("SearchText: %v", err)
 		}
-		if len(got) != 2 || got[0] != earlierID || got[1] != laterID {
-			t.Fatalf("SearchText order = %v, want [%s %s] (whole-second record first, as the earlier one)", got, earlierID, laterID)
+		if len(got) != 2 || got[0] != laterID || got[1] != earlierID {
+			t.Fatalf("SearchText order = %v, want [%s %s] (the +100ms record first, as the newer one)", got, laterID, earlierID)
 		}
 	})
 }

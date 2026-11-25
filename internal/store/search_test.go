@@ -230,21 +230,35 @@ func sessionScope(sessionIDs ...string) *LocationScope {
 	return &ls
 }
 
-// Records that match equally are ordered earliest first by ts. The later
-// record is inserted first, so rowid order is the reverse of ts order and
-// only the ts tiebreak can produce the wanted order.
-func TestSearchTextTiebreaksEqualRankByTsAscending(t *testing.T) {
+// Records that match equally are ordered newest first by ts. The earlier
+// record is inserted first, so rowid order agrees with ts order and only the
+// ts tiebreak can reverse it.
+func TestSearchTextTiebreaksEqualRankNewestFirst(t *testing.T) {
 	s := mustOpen(t, filepath.Join(t.TempDir(), "backstory.db"))
 	sessionID := mustStartSession(t, s)
 	earlier := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
-	laterID := insertRecordFixture(t, s, sessionID, earlier.Add(time.Hour), "tiebreak probe shared text")
 	earlierID := insertRecordFixture(t, s, sessionID, earlier, "tiebreak probe shared text")
+	laterID := insertRecordFixture(t, s, sessionID, earlier.Add(time.Hour), "tiebreak probe shared text")
 
 	got, err := s.SearchText("tiebreak", SearchFilter{Scope: sessionScope(sessionID), Limit: 10})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{earlierID, laterID}; !slices.Equal(got, want) {
-		t.Fatalf("order = %v, want %v (equal-rank ties broken by ts ascending)", got, want)
+	if want := []string{laterID, earlierID}; !slices.Equal(got, want) {
+		t.Fatalf("order = %v, want %v (equal-rank ties broken newest first)", got, want)
+	}
+}
+
+// KeyTermsOnly reduces even short text to its distinctive terms, so a short
+// Decision's filler words match nothing.
+func TestSearchTextKeyTermsOnly(t *testing.T) {
+	e := newSearchEnv(t)
+	sqlite := e.insert("proj-a", KindDecision, "keep SQLite as the store", "")
+	e.insert("proj-a", KindDecision, "use Postgres for reports", "")
+	if got := e.search("Use SQLite", SearchFilter{ProjectKey: "proj-a", Limit: 10}); len(got) != 2 {
+		t.Fatalf("short text by length: got %v, want both (%q matches %q)", got, "use", "use Postgres")
+	}
+	if got := e.search("Use SQLite", SearchFilter{ProjectKey: "proj-a", KeyTermsOnly: true, Limit: 10}); !slices.Equal(got, []string{sqlite}) {
+		t.Fatalf("KeyTermsOnly: got %v, want only [%s]", got, sqlite)
 	}
 }

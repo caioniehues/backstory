@@ -23,6 +23,10 @@ const (
 	SearchMaxTerms = 12
 )
 
+// notSuperseded is the condition over records r that r is the to_id of no
+// supersedes edge: with r.tombstoned_at IS NULL, what makes a Record Current.
+const notSuperseded = "NOT EXISTS (SELECT 1 FROM edges e WHERE e.to_id = r.id AND e.type = 'supersedes')"
+
 // SearchFilter narrows a search before anything is ranked, so a narrow
 // filter never comes back short. Tombstoned Records are always excluded.
 type SearchFilter struct {
@@ -166,7 +170,7 @@ func (s *Store) searchWhere(f SearchFilter) (where string, args []any, ok bool) 
 		args = append(args, jsonArray(kinds))
 	}
 	if f.CurrentOnly {
-		conds = append(conds, "NOT EXISTS (SELECT 1 FROM edges e WHERE e.to_id = r.id AND e.type = 'supersedes')")
+		conds = append(conds, notSuperseded)
 	}
 	return strings.Join(conds, " AND "), args, true
 }
@@ -232,7 +236,7 @@ func (s *Store) DecisionsSharingAbout(projectKey string, about []string) ([]stri
 	}
 	rows, err := s.db.Query(`SELECT r.id, r.about FROM records r
 		WHERE r.kind = 'decision' AND r.tombstoned_at IS NULL AND r.project_key = ? AND r.about IS NOT NULL
-		AND NOT EXISTS (SELECT 1 FROM edges e WHERE e.to_id = r.id AND e.type = 'supersedes')
+		AND `+notSuperseded+`
 		ORDER BY r.ts DESC`, s.canonicalizeProjectKey(projectKey))
 	if err != nil {
 		return nil, fmt.Errorf("store: decisions sharing about: %w", err)

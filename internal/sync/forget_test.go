@@ -28,7 +28,7 @@ func assertForgotten(t *testing.T, s *store.Store, name, id, word string) {
 	if got.TombstonedAt == nil || got.Text != "" {
 		t.Fatalf("%s: record %s not forgotten: tombstoned=%v text=%q", name, id, got.TombstonedAt, got.Text)
 	}
-	if hits, _ := s.SearchRecords(word, 10); len(hits) != 0 {
+	if textHits(t, s, id, word) != 0 {
 		t.Fatalf("%s: FTS still finds %q", name, word)
 	}
 	if n := count(t, s, `SELECT COUNT(*) FROM records_fts WHERE records_fts MATCH ?`, word); n != 0 {
@@ -47,7 +47,7 @@ func TestDeleteOfImportedRecordReachesItsOrigin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if hits, _ := a.SearchRecords("zebrafinch", 10); len(hits) != 1 {
+	if textHits(t, a, id, "zebrafinch") != 1 {
 		t.Fatal("record not searchable on A before the delete")
 	}
 	if err := b.TombstoneRecord(id, human); err != nil {

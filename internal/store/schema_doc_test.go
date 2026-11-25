@@ -11,9 +11,7 @@ import (
 
 // schemaDocPlanned names tables SCHEMA.md documents ahead of their migration.
 // Remove an entry in the commit that adds the table's migration.
-var schemaDocPlanned = map[string]bool{
-	"record_embeddings": true, // #20: no migration yet
-}
+var schemaDocPlanned = map[string]bool{}
 
 var (
 	schemaDocCreate = regexp.MustCompile(`^CREATE TABLE ([a-z_][a-z0-9_]*) \(`)

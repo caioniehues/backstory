@@ -282,7 +282,7 @@ project this store lacks under a placeholder project keyed `sync:<sync_id>`, reh
 through `project_key_aliases` when a local project gains that identity. Capture off here:
 import writes nothing and reports `paused`.
 
-### Record embeddings (planned, #20; no migration yet)
+### Record embeddings (migration 0028)
 
 ```sql
 CREATE TABLE record_embeddings (

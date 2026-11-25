@@ -342,7 +342,8 @@ func resolveTextAnchor(st *store.Store, searcher search.Searcher, anchor Anchor)
 	}
 
 	var notices []string
-	if namesHandoffKind(anchor.Text) || len(ids) == 0 {
+	wantHandoffs := namesHandoffKind(anchor.Text)
+	if wantHandoffs || len(ids) == 0 {
 		all, err := projectRecords(st, anchor)
 		if err != nil {
 			return nil, "", err
@@ -355,7 +356,7 @@ func resolveTextAnchor(st *store.Store, searcher search.Searcher, anchor Anchor)
 			if latest == "" {
 				latest = rec.ID
 			}
-			if namesHandoffKind(anchor.Text) && !seen[rec.ID] {
+			if wantHandoffs && !seen[rec.ID] {
 				seen[rec.ID] = true
 				ids = append(ids, rec.ID)
 			}

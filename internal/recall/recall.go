@@ -189,8 +189,9 @@ type Result struct {
 	Rendered string
 	// Notice is set for a text anchor: "no match for <query>; latest handoff
 	// shown" when nothing matched and recall fell back to the location's
-	// latest handoff, then the Searcher's reason when it gave one (e.g.
-	// "embeddings off"), joined by "; ". Empty for other anchors.
+	// latest handoff (and it made the budget), then the Searcher's reason
+	// when it gave one (e.g. "embeddings off"), joined by "; ". The reason is
+	// there even when Items is empty. Empty for other anchors.
 	Notice string
 }
 
@@ -204,7 +205,7 @@ type Result struct {
 // call, no env read) — it only needs the list to pass through to
 // store.HandoffFreshness when annotating a handoff's possibly-stale status.
 func Build(st *store.Store, searcher search.Searcher, anchor Anchor, altitude Altitude, budgetTokens int, workspaces []string) (Result, error) {
-	recs, notice, err := resolve(st, searcher, anchor)
+	recs, notes, err := resolve(st, searcher, anchor)
 	if err != nil {
 		return Result{}, err
 	}
@@ -225,10 +226,23 @@ func Build(st *store.Store, searcher search.Searcher, anchor Anchor, altitude Al
 	}
 
 	res := fit(items, altitude, budgetTokens)
-	if len(res.Items) > 0 {
-		res.Notice = notice
+	var notices []string
+	if notes.fallback != "" && len(res.Items) > 0 {
+		notices = append(notices, notes.fallback)
 	}
+	if notes.reason != "" {
+		notices = append(notices, notes.reason)
+	}
+	res.Notice = strings.Join(notices, "; ")
 	return res, nil
+}
+
+// notes is what resolve has to say about how it found the records: the
+// latest-Handoff fallback notice and the Searcher's reason, each "" when
+// there is none.
+type notes struct {
+	fallback string
+	reason   string
 }
 
 // resolve turns anchor into an ordered record set, before status
@@ -237,18 +251,18 @@ func Build(st *store.Store, searcher search.Searcher, anchor Anchor, altitude Al
 // search hits are re-ordered into sequence order the same way, so every
 // anchor kind's output obeys the one ordering rule (SCHEMA.md invariant
 // 10: order by sequence, never ts).
-func resolve(st *store.Store, searcher search.Searcher, anchor Anchor) ([]store.Record, string, error) {
+func resolve(st *store.Store, searcher search.Searcher, anchor Anchor) ([]store.Record, notes, error) {
 	switch anchor.Kind {
 	case AnchorProject:
 		recs, err := projectRecords(st, anchor)
-		return recs, "", err
+		return recs, notes{}, err
 	case AnchorRecord:
 		recs, err := resolveRecordAnchor(st, anchor.RecordID)
-		return recs, "", err
+		return recs, notes{}, err
 	case AnchorText:
 		return resolveTextAnchor(st, searcher, anchor)
 	default:
-		return nil, "", fmt.Errorf("recall: unknown anchor kind %q", anchor.Kind)
+		return nil, notes{}, fmt.Errorf("recall: unknown anchor kind %q", anchor.Kind)
 	}
 }
 
@@ -327,12 +341,12 @@ var handoffKindWords = map[string]bool{"handoff": true, "handoffs": true, "resum
 // the handoff kind, and re-orders the match set into sequence order. When
 // nothing matches it falls back to the location's latest handoff and says
 // so in the returned notice, which also carries the searcher's reason.
-func resolveTextAnchor(st *store.Store, searcher search.Searcher, anchor Anchor) ([]store.Record, string, error) {
+func resolveTextAnchor(st *store.Store, searcher search.Searcher, anchor Anchor) ([]store.Record, notes, error) {
 	found, err := searcher.Search(context.Background(), search.Query{
 		Text: anchor.Text, ProjectKey: anchor.ProjectKey, Scope: anchor.Scope, Limit: maxTextResults,
 	})
 	if err != nil {
-		return nil, "", fmt.Errorf("recall: text anchor: %w", err)
+		return nil, notes{}, fmt.Errorf("recall: text anchor: %w", err)
 	}
 	ids := make([]string, 0, len(found.Hits))
 	seen := map[string]bool{}
@@ -341,12 +355,12 @@ func resolveTextAnchor(st *store.Store, searcher search.Searcher, anchor Anchor)
 		seen[h.RecordID] = true
 	}
 
-	var notices []string
+	n := notes{reason: found.Reason}
 	wantHandoffs := namesHandoffKind(anchor.Text)
 	if wantHandoffs || len(ids) == 0 {
 		all, err := projectRecords(st, anchor)
 		if err != nil {
-			return nil, "", err
+			return nil, notes{}, err
 		}
 		var latest string
 		for _, rec := range all {
@@ -363,17 +377,14 @@ func resolveTextAnchor(st *store.Store, searcher search.Searcher, anchor Anchor)
 		}
 		if len(ids) == 0 && latest != "" {
 			ids = append(ids, latest)
-			notices = append(notices, fmt.Sprintf("no match for %s; latest handoff shown", anchor.Text))
+			n.fallback = fmt.Sprintf("no match for %s; latest handoff shown", anchor.Text)
 		}
-	}
-	if found.Reason != "" {
-		notices = append(notices, found.Reason)
 	}
 	recs, err := st.RecordsByIDs(ids)
 	if err != nil {
-		return nil, "", fmt.Errorf("recall: text anchor: %w", err)
+		return nil, notes{}, fmt.Errorf("recall: text anchor: %w", err)
 	}
-	return recs, strings.Join(notices, "; "), nil
+	return recs, n, nil
 }
 
 // namesHandoffKind reports whether query has a word naming the handoff kind.

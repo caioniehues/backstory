@@ -613,8 +613,8 @@ func TestBuildTextAnchorNoMatchFallsBackToLatestHandoff(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s empty: Build: %v", name, err)
 		}
-		if len(res.Items) != 0 || res.Notice != "" {
-			t.Errorf("%s empty: items = %v notice = %q, want nothing", name, itemIDs(res.Items), res.Notice)
+		if len(res.Items) != 0 || res.Notice != search.ReasonEmbeddingsOff {
+			t.Errorf("%s empty: items = %v notice = %q, want no items and only the search's reason", name, itemIDs(res.Items), res.Notice)
 		}
 	}
 }

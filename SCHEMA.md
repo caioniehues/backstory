@@ -258,6 +258,30 @@ project this store lacks under a placeholder project keyed `sync:<sync_id>`, reh
 through `project_key_aliases` when a local project gains that identity. Capture off here:
 import writes nothing and reports `paused`.
 
+### Record embeddings (planned, #20; no migration yet)
+
+```sql
+CREATE TABLE record_embeddings (
+  record_id  TEXT PRIMARY KEY REFERENCES records(id),
+  model      TEXT NOT NULL,     -- fingerprint: model file sha256 + prompt-template version + dim
+  dim        INTEGER NOT NULL,
+  vec        BLOB NOT NULL      -- float32 × dim
+);
+```
+
+Derived, Device-local, mutable data, **outside the append-only invariants below**
+(`docs/adr/0003`). One row per Record: every non-tombstoned `decision`, `outcome`,
+`handoff` or `note`, superseded and sync-imported ones included. The document is `text`,
+plus `next` for a Handoff. It has no sync trigger, is never served to a Peer and is left out
+of `export`. Backups and restore carry it as part of the DB file. The write is one
+statement, `INSERT … SELECT … FROM records WHERE id = ? AND tombstoned_at IS NULL …
+ON CONFLICT(record_id) DO UPDATE`, so a vector can't bring back a forgotten Record. A model
+change re-embeds by upsert, and the Search seam ignores rows whose `model`/`dim` don't match
+the query. `tombstoneRecordTx`, the body that Delete, Purge and synced tombstones share,
+deletes the row in the same transaction as the `records_fts` scrub. The opt-in switch is
+in Device-local, never-synced `settings` keys (`embed.runtime`, `embed.model`,
+`embed.device`, `embed.drain_lease`).
+
 ## Invariants the store enforces
 
 These are enforced in the `store` package and, where SQLite can express them, in the DDL.

@@ -122,8 +122,8 @@ func TestRunEmbedsAFullBatchWithoutWaitingForTheFlush(t *testing.T) {
 	eventually(t, "the full batch", func() bool { return e.counts().Queued == 0 })
 }
 
-// A failing runtime backs off exponentially from FirstBackoff, capped at
-// MaxBackoff. A wake during the backoff doesn't retry, but a changed setup
+// A failing runtime backs off exponentially from 5 s, capped at 10 min
+// (#20). A wake during the backoff doesn't retry, but a changed setup
 // (the Human fixed the runtime) retries at once.
 func TestRunBacksOffExponentiallyCappedAtMax(t *testing.T) {
 	e := newEnv(t)
@@ -157,4 +157,37 @@ func TestRunBacksOffExponentiallyCappedAtMax(t *testing.T) {
 	e.turnOn("/opt/llama-fixed/llama-embedding")
 	d.Wake()
 	eventually(t, "the retry after the setup changed", func() bool { return e.counts().Queued == 0 })
+}
+
+// A pass that works starts the backoff over: the next failure waits the
+// first backoff again, not double the last one.
+func TestRunBackoffStartsOverAfterAPassThatWorks(t *testing.T) {
+	e := newEnv(t)
+	e.insertN(2)
+	setFail := func(fail bool) {
+		e.emb.mu.Lock()
+		defer e.emb.mu.Unlock()
+		e.emb.fail = nil
+		if fail {
+			e.emb.fail = func([]string) error { return errRuntime }
+		}
+	}
+	setFail(true)
+	timers := newFakeTimers()
+	startRun(t, e, timers)
+	eventually(t, "the first backoff", func() bool { return len(timers.asked()) == 1 })
+	fire(t, timers.retry, "backoff")
+	eventually(t, "the second backoff", func() bool { return len(timers.asked()) == 2 })
+
+	setFail(false)
+	fire(t, timers.retry, "backoff")
+	eventually(t, "the pass that works", func() bool { return e.counts().Queued == 0 })
+
+	setFail(true)
+	e.insertN(1)
+	fire(t, timers.poll, "poll")
+	eventually(t, "the backoff after the next failure", func() bool { return len(timers.asked()) == 3 })
+	if got, want := timers.asked(), []time.Duration{5 * time.Second, 10 * time.Second, 5 * time.Second}; !slices.Equal(got, want) {
+		t.Fatalf("backoffs = %v, want %v", got, want)
+	}
 }

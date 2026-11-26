@@ -31,11 +31,6 @@ const (
 	// LeaseTTL is how long the drain lease lasts unless renewed; it is
 	// renewed after each batch.
 	LeaseTTL = 5 * time.Minute
-	// FirstBackoff is the wait after a runtime failure. It doubles with
-	// each failure in a row, up to MaxBackoff.
-	FirstBackoff = 5 * time.Second
-	// MaxBackoff caps the wait between retries of a failing runtime.
-	MaxBackoff = 10 * time.Minute
 	// MaxRecordFailures is how many times a Record may fail alone before
 	// it is skipped. Skips are counted in memory only: there is no failure
 	// table, and a restart tries them again.
@@ -136,7 +131,6 @@ type Drain struct {
 	skipped  map[string]bool
 	report   Report
 	saved    Report
-	backoff  time.Duration
 }
 
 // New makes a Drain.
@@ -362,13 +356,16 @@ func (d *Drain) logf(format string, args ...any) {
 
 // Run is the daemon's drain: a pass at start, after each Wake (once
 // FlushInterval has passed, or at once with a full batch queued) and every
-// PollInterval. A Failed pass backs off, from FirstBackoff doubling up to
-// MaxBackoff; wakes and polls wait for the backoff unless the setup has
-// changed. It returns when ctx is done.
+// PollInterval. A Failed pass backs off by embed.Backoff's default rule (5 s
+// doubling up to 10 min, the query server's too); wakes and polls wait for
+// the backoff unless the setup has changed. It returns when ctx is done.
 func (d *Drain) Run(ctx context.Context) {
 	var flush, retry <-chan time.Time
 	poll := d.cfg.After(PollInterval)
-	var failedSetup embed.Setup
+	var (
+		failedSetup embed.Setup
+		backoff     embed.Backoff
+	)
 	run := func() {
 		flush = nil
 		out, err := d.Pass(ctx)
@@ -376,18 +373,14 @@ func (d *Drain) Run(ctx context.Context) {
 			return
 		}
 		if out != Failed {
-			d.backoff, retry = 0, nil
+			backoff.Reset()
+			retry = nil
 			return
 		}
-		switch {
-		case d.backoff == 0:
-			d.backoff = FirstBackoff
-		case d.backoff < MaxBackoff:
-			d.backoff = min(2*d.backoff, MaxBackoff)
-		}
-		d.logf("embeddings: %v; retrying in %s", err, d.backoff)
+		delay := backoff.Next()
+		d.logf("embeddings: %v; retrying in %s", err, delay)
 		failedSetup, _, _ = embed.LoadSetup(d.cfg.Store)
-		retry = d.cfg.After(d.backoff)
+		retry = d.cfg.After(delay)
 	}
 	setupChanged := func() bool {
 		s, _, err := embed.LoadSetup(d.cfg.Store)

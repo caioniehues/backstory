@@ -15,6 +15,10 @@ See `RELEASING.md` for the release flow and its approval gates.
 
 - A possibly stale handoff's reasons read the same everywhere (#2). The session-start block's marker, `recall`'s status and This Week's Needs You reason all give one short clause per reason, e.g. `cargo test failed (exit 101) after it; 2 later edits to files it names`, where before the block counted "later non-zero exit(s)", `recall` printed kind slugs (`later-failure (ids 12)`) and This Week printed slugs for every reason but a failure. The block and `recall` then cite the evidence as `(evidence <ids>)`. In `this-week --json`, a `later-activity` reason's `text` is now `a later edit to a file the handoff names` (was `1 later event touched files the handoff names`) and a `contradicted` one starts `contradicted by a later record: `.
 
+### Fixed
+
+- A handoff written in a non-git folder deeper under a workspace dir (e.g. `~/projects/group/notes`) now keeps the workspace home it was written to (#5). Before, the next `store.Open` moved it onto the folder's own path, as if that folder were a repo, and wrote a `backstory.db.pre-rehome-*` backup each time one was written. Such a handoff now counts on the workspace's row in This Week and `backstory projects`, and a later session anywhere in the workspace can make it Possibly stale, as for one written at the workspace root. Handoffs already moved stay where they are.
+
 ## [1.3.6] - 2026-11-25
 
 ### Security

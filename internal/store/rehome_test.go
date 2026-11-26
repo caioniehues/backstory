@@ -149,3 +149,56 @@ func dumpRecord(t *testing.T, db *sql.DB, id string) []any {
 	}
 	return vals
 }
+
+// TestRehomeLeavesEveryHandoffWhereTheWriteRuleFiledIt: the migration at Open
+// only moves a Handoff its writer would no longer file where it is (#5). A
+// Handoff note filed under its writer's Handoff home (project.HandoffHome)
+// stays put — in particular one written in a non-git folder deeper under a
+// Workspace, whose Session is keyed by its bare folder but whose Handoffs home
+// at the Workspace (decision dc0a4387). Only the legacy one, filed under the
+// Workspace by a Session in a repo under it, moves onto the repo.
+func TestRehomeLeavesEveryHandoffWhereTheWriteRuleFiledIt(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "backstory.db")
+	root := filepath.Join(dir, "projects")
+	workspaces := []string{root}
+	ws := "workspace:" + root
+	repo := filepath.Join(root, "tide")
+	repoKey := filepath.Join(repo, ".git")
+	direct := filepath.Join(root, "scratch")
+	deep := filepath.Join(root, "group", "plain")
+
+	s, err := Open(path, workspaces, fakeSweepGit{})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	db := s.DB()
+	rawInsertProject(t, db, ws, root, sweepT1)
+	rawInsertProject(t, db, repoKey, repo, sweepT1)
+	rawInsertProject(t, db, deep, deep, sweepT1)
+	rawInsertSession(t, db, "s-root", ws, root, sweepT1)
+	rawInsertSession(t, db, "s-direct", ws, direct, sweepT1)
+	rawInsertSession(t, db, "s-deep", deep, deep, sweepT1)
+	rawInsertSession(t, db, "s-repo", repoKey, repo, sweepT1)
+	rawInsertRecord(t, db, "h-root", ws, "s-root", KindHandoff, sweepT2)
+	rawInsertRecord(t, db, "h-direct", ws, "s-direct", KindHandoff, sweepT2)
+	rawInsertRecord(t, db, "h-deep", ws, "s-deep", KindHandoff, sweepT2)
+	rawInsertRecord(t, db, "h-repo", repoKey, "s-repo", KindHandoff, sweepT2)
+	rawInsertRecord(t, db, "h-legacy", ws, "s-repo", KindHandoff, sweepT2)
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	s, err = Open(path, workspaces, fakeSweepGit{})
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+	for id, want := range map[string]string{
+		"h-root": ws, "h-direct": ws, "h-deep": ws, "h-repo": repoKey, "h-legacy": repoKey,
+	} {
+		if got := projectKeyOf(t, s.DB(), id); got != want {
+			t.Errorf("%s project_key = %q, want %q", id, got, want)
+		}
+	}
+}

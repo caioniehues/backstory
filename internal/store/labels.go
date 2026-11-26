@@ -130,8 +130,8 @@ type ActiveWorkLocation struct {
 }
 
 // ActiveHomeLabels returns every work-location label (sessionLabels) with
-// activity in [since, asOf], contributed by any session whose folder
-// resolves to home (sessionHomeKey) — decision f3fa04c7 clause 5's home-wide
+// activity in [since, asOf], contributed by any session in home
+// (sessionsForHome) — decision f3fa04c7 clause 5's home-wide
 // label scan: a home's active work locations are the union of every one of
 // its sessions' own OBSERVED labels, independent of whether that session's
 // own project_key happens to equal a per-repo key. Sorted by label.
@@ -246,33 +246,17 @@ func (s *Store) sessionLastActivity(sess Session, asOf time.Time) (time.Time, bo
 	return tsFromNanos(maxTS.Int64), true, nil
 }
 
-// sessionHomeKey is the home key sess's own folder resolves to (decision
-// f3fa04c7): the enclosing workspace's key when sess.CWD is a workspace dir
-// or lives inside one at any depth (project.WorkspaceHome), else sess's own
-// stored project_key unchanged. A handoff written from a repo under a
-// workspace is still filed under the repo's own key (decision dc0a4387), so
-// sessionsForHome also admits a session by its project_key.
-func sessionHomeKey(sess Session, workspaces []string) string {
-	if home, ok := project.WorkspaceHome(sess.CWD, workspaces); ok {
-		return home
-	}
-	return sess.ProjectKey
-}
-
-// sessionsForHome returns every session whose own folder resolves
-// (sessionHomeKey) to homeKey, or whose own project_key is homeKey — the
-// membership HandoffFreshness's home-scoped queries need (decision
-// f3fa04c7): "every session whose folder
-// resolves to that home", which can span many distinct project_key values
-// (one per repo under a workspace), not just homeKey's own project_key
-// aliases. Order is unspecified; callers care about membership, not
+// sessionsForHome returns every session that belongs to homeKey
+// (project.InHome, the one home rule): those whose own project_key is homeKey,
+// and, for a Workspace's key, every session whose folder is in it at any
+// depth. That is the membership HandoffFreshness's home-scoped queries and
+// This Week's Workspace labels need (decision f3fa04c7), which can span many
+// distinct project_key values (one per repo under a Workspace), and it always
+// includes every session whose own Handoffs are filed under homeKey (decision
+// dc0a4387, #5). Order is unspecified; callers care about membership, not
 // sequence.
 //
-// The project_key match keeps a repo under a workspace in its own handoff's
-// home: its sessions' folders resolve to the workspace, but the handoff is
-// filed under the repo's key (decision dc0a4387).
-//
-// It reads only candidates, a superset of the members (sessionHomeKey still
+// It reads only candidates, a superset of the members (project.InHome still
 // decides the rest): sessions with project_key homeKey, and, when homeKey is a
 // workspace's own key, every session whose folder starts with that
 // workspace or is spelled unclean (filepath.Clean could move it inside).
@@ -304,7 +288,7 @@ func (s *Store) sessionsForHome(homeKey string, workspaces []string) ([]Session,
 		if err != nil {
 			return nil, fmt.Errorf("store: sessions for home %s: %w", homeKey, err)
 		}
-		if sess.ProjectKey == homeKey || sessionHomeKey(sess, workspaces) == homeKey {
+		if project.InHome(homeKey, sess.CWD, sess.ProjectKey, workspaces) {
 			out = append(out, sess)
 		}
 	}

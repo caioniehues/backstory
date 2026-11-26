@@ -75,8 +75,10 @@ row exactly matching plain `W` is merged into `"workspace:"+W` (earliest
 `first_seen`) and the plain row is deleted. Before the
 first rewrite, `VACUUM INTO` backs up the pre-sweep file beside the database.
 `store.Open` also runs a one-time handoff re-home (decision `dc0a4387`): every live `kind='handoff'`
-record filed under a `workspace:` key whose writing session is filed under a repo key (not a
-`workspace:` key, not a `sync:` placeholder) moves to that session's key. The file is first backed up
+record filed under a `workspace:` key whose writing session's Handoff home (`project.HandoffHome`,
+the rule `note` files by) is a repo key moves to that session's key. A session keyed to a `sync:`
+placeholder is never considered, and one in a non-git folder under a Workspace, at any depth, keeps
+the Workspace home. The file is first backed up
 as `backstory.db.pre-rehome-<UTC time>`; then, in one transaction, `records_no_update` is dropped, the
 `project_key` is rewritten, the trigger is recreated from its one definition, and one `sync_changes`
 row (`record`) is queued per moved record so paired machines receive it. Tombstoned handoffs are left

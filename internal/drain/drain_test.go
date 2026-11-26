@@ -349,6 +349,27 @@ func TestARecordThatKeepsFailingIsSkippedAndCounted(t *testing.T) {
 	}
 }
 
+// ReadReportCounts counts under the fingerprint the drain published, and
+// counts nothing before any drain has published one.
+func TestReadReportCountsUnderThePublishedFingerprint(t *testing.T) {
+	e := newEnv(t)
+	e.insertN(3)
+	if _, c, counted, err := ReadReportCounts(e.st); err != nil || counted || c != (store.EmbedCounts{}) {
+		t.Fatalf("before any pass: counts %+v, counted %v, err %v; want nothing counted", c, counted, err)
+	}
+	if out, err := pass(t, New(e.config())); out != Drained || err != nil {
+		t.Fatalf("Pass = %v, %v", out, err)
+	}
+	e.insertN(2)
+	r, c, counted, err := ReadReportCounts(e.st)
+	if err != nil || !counted || r.Fingerprint != testFP {
+		t.Fatalf("report %+v, counted %v, err %v; want the drain's fingerprint", r, counted, err)
+	}
+	if c != (store.EmbedCounts{Embedded: 3, Queued: 2}) {
+		t.Fatalf("counts = %+v, want 3 embedded, 2 queued", c)
+	}
+}
+
 // When nothing in a batch embeds, even alone, the runtime is failing, not
 // the Records: none of them is counted toward a skip.
 func TestABrokenRuntimeSkipsNoRecord(t *testing.T) {

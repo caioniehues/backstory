@@ -466,6 +466,21 @@ func ReadReport(s embed.Settings) (Report, bool, error) {
 	return r, true, nil
 }
 
+// ReadReportCounts reads the published Report and counts the Records
+// embedded and queued under its fingerprint. counted is false, with zero
+// counts, while no drainer has published a fingerprint; the Report (its
+// setup error, say) still comes back.
+func ReadReportCounts(st *store.Store) (r Report, c store.EmbedCounts, counted bool, err error) {
+	r, ok, err := ReadReport(st)
+	if err != nil || !ok || r.Fingerprint == "" {
+		return r, store.EmbedCounts{}, false, err
+	}
+	if c, err = st.EmbedCounts(r.Fingerprint); err != nil {
+		return r, store.EmbedCounts{}, false, err
+	}
+	return r, c, true, nil
+}
+
 // save publishes the report when it has changed. A failure to write it is
 // only logged: status is best-effort.
 func (d *Drain) save() {

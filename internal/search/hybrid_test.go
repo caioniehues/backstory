@@ -193,6 +193,35 @@ func TestVectorSideFiltersBeforeRanking(t *testing.T) {
 	}
 }
 
+// An expired Draft is a stale guess: neither side returns it, even where it
+// would rank first, and a Draft that hasn't expired yet is still found.
+func TestExpiredDraftsAreNeverHits(t *testing.T) {
+	e := newHybridEnv(t, queryEast("quokka"))
+	draft := func(text string, expires time.Time) string {
+		t.Helper()
+		id, err := e.st.InsertRecord(store.InsertRecordParams{
+			Identity: store.Identity{Kind: store.IdentityInference}, Kind: store.KindNote, Text: text,
+			SessionID: e.sessions["proj-a"], ProjectKey: "proj-a", ExpiresAt: &expires,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		e.vector(id, testFingerprint, 1, 0)
+		return id
+	}
+	draft("quokka quokka quokka", time.Now().Add(-time.Hour))
+	live := draft("a fresh guess", time.Now().Add(time.Hour))
+	text := e.insertVec("one quokka among very many other unrelated words", 0, 1)
+
+	res := e.search(Query{Text: "quokka", ProjectKey: "proj-a", Limit: 10})
+	if got := ids(res.Hits); !slices.Equal(got, []string{text, live}) {
+		t.Fatalf("hits = %v, want [%s %s] (no expired Draft on either side)", got, text, live)
+	}
+	if res.Reason != "" {
+		t.Errorf("Reason = %q, want none (an expired Draft isn't waiting for a vector)", res.Reason)
+	}
+}
+
 // While some Records have no vector for the current fingerprint (a model
 // changeover, or not embedded yet), the result is partial and says so.
 // Vectors of the old model are never compared with the query.

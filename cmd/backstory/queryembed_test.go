@@ -149,7 +149,9 @@ func TestDaemonAnswersEmbedQueryFromItsWarmServer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	env = append(env, fakeAncestryEnvVar+"="+string(b), "STUB_SERVER_DELAY=2s", "STUB_SERVER_SLOW=too slow")
+	inputs := filepath.Join(t.TempDir(), "server-inputs")
+	env = append(env, fakeAncestryEnvVar+"="+string(b), "STUB_SERVER_DELAY=2s", "STUB_SERVER_SLOW=too slow",
+		"STUB_SERVER_INPUTS="+inputs)
 	env = append(env, stubEnv...)
 	cmd := exec.Command(bin, "daemon") //nolint:gosec // bin is the binary this test just built
 	cmd.Env = env
@@ -214,6 +216,29 @@ func TestDaemonAnswersEmbedQueryFromItsWarmServer(t *testing.T) {
 		t.Errorf("the daemon's recall: message %q, items %v; want the Decision found by its vector", msg, ids)
 	}
 
+	// A Decision written with note is Record text: its related-Decisions
+	// check embeds it through the batch runtime, so the warm server, which
+	// records every input it is sent, never sees it (#37 user story 45).
+	// The check still finds by meaning: once the first is embedded, a
+	// second Decision sharing no word with it lists it (the stubs' vectors
+	// are all close).
+	first := daemonNote(t, sock, "wombat burrows hold the nightly snapshots")
+	waitForEmbedded(t, dbPath, fp, first.ID, out.String)
+	second := daemonNote(t, sock, "kangaroo ledger rotates quarterly")
+	if len(second.RelatedDecisions) == 0 || second.RelatedDecisions[0].ID != first.ID {
+		t.Errorf("related_decisions = %+v, want %s found by meaning", second.RelatedDecisions, first.ID)
+	}
+	sent, err := os.ReadFile(inputs) //nolint:gosec // the test's own temp file
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(sent), "marsupial") {
+		t.Fatalf("the stub recorded no query input (%q); the check below would prove nothing", sent)
+	}
+	if strings.Contains(string(sent), "wombat") || strings.Contains(string(sent), "kangaroo") {
+		t.Errorf("the query server was sent a note's Record text:\n%s", sent)
+	}
+
 	starts, err := os.ReadFile(strings.TrimPrefix(stubEnv[1], "STUB_SERVER_STARTS=")) //nolint:gosec // the test's own temp file
 	if err != nil {
 		t.Fatal(err)
@@ -276,6 +301,62 @@ func daemonRecall(t *testing.T, sock, query string) (string, []string) {
 		ids = append(ids, it.ID)
 	}
 	return res.Message, ids
+}
+
+// daemonNote writes a Decision with text through the daemon's note method
+// and fails the test unless it lands.
+func daemonNote(t *testing.T, sock, text string) mcp.NoteResult {
+	t.Helper()
+	conn, err := net.Dial("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+	params, err := json.Marshal(mcp.NoteParams{Kind: "decision", Text: text})
+	if err != nil {
+		t.Fatal(err)
+	}
+	line, err := json.Marshal(mcp.DaemonRequest{Method: "note", Params: params})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Write(append(line, '\n')); err != nil {
+		t.Fatal(err)
+	}
+	reply, err := bufio.NewReader(conn).ReadBytes('\n')
+	if err != nil {
+		t.Fatal(err)
+	}
+	var resp mcp.DaemonResponse
+	if err := json.Unmarshal(reply, &resp); err != nil || resp.Error != nil {
+		t.Fatalf("note: %s (%v)", reply, err)
+	}
+	var res mcp.NoteResult
+	if err := json.Unmarshal(resp.Result, &res); err != nil {
+		t.Fatal(err)
+	}
+	return res
+}
+
+// waitForEmbedded waits until the drain has stored a vector for id under
+// fp.
+func waitForEmbedded(t *testing.T, dbPath, fp, id string, log func() string) {
+	t.Helper()
+	st, err := store.Open(dbPath, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		if _, ok, err := st.RecordVector(id, fp); err != nil {
+			t.Fatal(err)
+		} else if ok {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the drain never embedded %s under %q\ndaemon log:\n%s", id, fp, log())
+		}
+	}
 }
 
 // waitForDrained waits until the drain has published fp as its fingerprint

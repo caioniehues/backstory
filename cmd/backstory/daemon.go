@@ -17,6 +17,7 @@ import (
 	"github.com/RidgetopAi/backstory/internal/backfill/codex"
 	"github.com/RidgetopAi/backstory/internal/backfill/hermes"
 	"github.com/RidgetopAi/backstory/internal/backfill/pi"
+	"github.com/RidgetopAi/backstory/internal/embed"
 	"github.com/RidgetopAi/backstory/internal/ident"
 	"github.com/RidgetopAi/backstory/internal/mcp"
 	"github.com/RidgetopAi/backstory/internal/project"
@@ -139,12 +140,15 @@ func runDaemon(_ []string, stdout, stderr io.Writer) int {
 
 	sessions := mcp.NewSessionRegistry()
 	searcher := search.New(st, search.WithEmbedder(queryServer))
+	// note's related-Decisions check embeds Record text, so through the
+	// batch runtime: the query server only ever holds query text.
+	recordEmbedder := &embed.RecordEmbedder{Settings: st}
 	srv, err := socket.Listen(sockPath, resolver, func(id ident.Identity, conn net.Conn) {
 		defer func() { _ = conn.Close() }()
 		logIdentity(logger, id)
 		testSlowHandler()
 		mcp.ServeDaemonConn(id, conn, st, searcher, procfs, project.RealGit{}, logger, sessions, captureOff, workspaceDirs,
-			mcp.WithQueryEmbedder(queryServer))
+			mcp.WithQueryEmbedder(queryServer), mcp.WithRecordEmbedder(recordEmbedder))
 	})
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "backstory daemon:", err)

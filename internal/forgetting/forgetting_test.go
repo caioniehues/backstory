@@ -130,3 +130,18 @@ func TestAutoBackupAtReadsOnlyAutomaticBackupNames(t *testing.T) {
 		}
 	}
 }
+
+// A reason whose copy Copies could not find is refused when the copy is
+// named, so the writer's first test fails instead of a purge missing it.
+func TestPreCopyPathRefusesAReasonCopiesCouldNotFind(t *testing.T) {
+	for _, why := range []Reason{"", "V2", "re_home", "-sweep", "a/b"} {
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Errorf("PreCopyPath(%q) did not panic", why)
+				}
+			}()
+			_ = PreCopyPath("/data/backstory.db", why, t0)
+		}()
+	}
+}

@@ -33,8 +33,14 @@ const preCopyLayout = "20060102T150405.000000000Z"
 
 // PreCopyPath is where the copy of the store at dbPath taken at at, before
 // the change why, goes: beside the store, as <store>.pre-<why>-<UTC stamp>.
+// It panics on a reason whose copy Copies would not find (why must be
+// lowercase letters and hyphens), so such a writer fails its first test.
 func PreCopyPath(dbPath string, why Reason, at time.Time) string {
-	return dbPath + ".pre-" + string(why) + "-" + at.UTC().Format(preCopyLayout)
+	rest := ".pre-" + string(why) + "-" + at.UTC().Format(preCopyLayout)
+	if !preCopyRest.MatchString(rest) {
+		panic(fmt.Sprintf("forgetting: pre-copy reason %q would not be found by Copies", why))
+	}
+	return dbPath + rest
 }
 
 // backupLayout is the UTC stamp in a backup's name.

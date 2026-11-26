@@ -3,18 +3,17 @@ package embed
 import "time"
 
 // The runtime-failure backoff (#20: "back off exponentially, capped at about
-// 10 min"), the same rule as the drain's FirstBackoff and MaxBackoff (#42).
-// embed can't import drain (drain imports embed), so the daemon configures
-// the query server with drain's constants and a cmd/backstory test holds
-// these two to them.
+// 10 min"). It is the one rule: the drain (#42) and the query server both
+// back off by it.
 const (
 	BackoffBase = 5 * time.Second
 	BackoffCap  = 10 * time.Minute
 )
 
 // Backoff is how long a failing runtime waits before its next try: Base,
-// then double each consecutive failure, never above Cap. The query server
-// backs off crashes and failed starts with it. The zero value uses
+// then double each consecutive failure, never above Cap. The drain backs
+// off failed passes with it, the query server crashes and failed starts.
+// The zero value uses
 // BackoffBase and BackoffCap. It is not safe for concurrent use.
 type Backoff struct {
 	Base, Cap time.Duration

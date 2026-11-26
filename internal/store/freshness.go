@@ -397,8 +397,8 @@ func (s *Store) aboutWithAbsolutePaths(memberKeys, about []string) ([]string, er
 }
 
 // homeMembership resolves handoffProjectKey's HOME scope (decision
-// f3fa04c7): every session whose own folder resolves to handoffProjectKey
-// (sessionsForHome) — which, for a workspace-homed handoff, spans every
+// f3fa04c7): every session in handoffProjectKey (sessionsForHome,
+// project.InHome) — which, for a workspace-homed handoff, spans every
 // repo under that workspace, not just handoffProjectKey's own literal value
 // — plus the distinct project_key values those sessions themselves carry
 // (always including handoffProjectKey itself, so a handoff filed at a plain

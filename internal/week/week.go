@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RidgetopAi/backstory/internal/gitstate"
 	hstatus "github.com/RidgetopAi/backstory/internal/handoff"
 	"github.com/RidgetopAi/backstory/internal/payload"
 	"github.com/RidgetopAi/backstory/internal/project"
@@ -37,8 +38,8 @@ const maxRecordsPerProject = 1000
 type Params struct {
 	Store *store.Store
 	// Git resolves a project's toplevel repo identity for decision
-	// f3fa04c7's per-repo handoff resolution (store.LatestHandoffAt) when a
-	// project's latest session lives inside a workspace, and (clause 5,
+	// f3fa04c7's per-repo handoff resolution (handoff.ResumeFor) when a
+	// project's folder lives inside a workspace, and (clause 5,
 	// task 482b2320) for deriving a home's own active work-location labels
 	// from its sessions' observed file-touching events. nil is safe as long
 	// as no active project_key in the window is itself a workspace
@@ -464,10 +465,6 @@ func buildProject(st *store.Store, projectKey string, since, now time.Time, git 
 	}
 	summary.DisplayName = name
 
-	sess, hasSess, err := st.LatestSessionForProject(projectKey)
-	if err != nil {
-		return ProjectSummary{}, nil, fmt.Errorf("week: latest session for %s: %w", projectKey, err)
-	}
 	if summary.CWD, err = localProjectDir(st, projectKey); err != nil {
 		return ProjectSummary{}, nil, err
 	}
@@ -493,7 +490,7 @@ func buildProject(st *store.Store, projectKey string, since, now time.Time, git 
 
 	var attention []AttentionItem
 
-	handoff, hasHandoff, err := projectHandoff(st, projectKey, sess, hasSess, git, workspaces)
+	handoff, hasHandoff, err := rowHandoff(st, projectKey, summary.CWD, git, workspaces)
 	if err != nil {
 		return ProjectSummary{}, nil, fmt.Errorf("week: latest handoff for %s: %w", projectKey, err)
 	}
@@ -559,25 +556,30 @@ func buildProject(st *store.Store, projectKey string, since, now time.Time, git 
 	return summary, attention, nil
 }
 
-// projectHandoff resolves projectKey's own handoff for the Where-you-left-
-// off / Attention slot (decision f3fa04c7, task ed31b744): a session inside
-// a workspace files its handoffs under the workspace's home key, so the
-// row's handoff is the newest one belonging to the row's location
-// (store.LatestHandoffAt — the resolver block's Resume, recall, export and
-// `records --location` share). Outside any workspace (or with no session at
-// all), this is exactly the old st.LatestRecord(projectKey, KindHandoff).
-func projectHandoff(st *store.Store, projectKey string, sess store.Session, hasSess bool, git project.Git, workspaces []string) (store.Record, bool, error) {
-	if hasSess {
-		if _, ok := project.WorkspaceHome(sess.CWD, workspaces); ok {
-			return st.LatestHandoffAt(sess.CWD, git, workspaces)
-		}
+// rowHandoff is a Work location's Handoff for Where you left off and
+// Attention: its Resume handoff (handoff.ResumeFor) read at dir, the
+// location's folder on this Device, never a Peer's cwd, preferring the branch
+// checked out there, as a session started at dir would.
+//
+// The branch is read (a git status) only when it can change the pick: the
+// newest Current Handoff was written on a known branch. One with no branch,
+// or on the branch checked out, is also the branch pass's pick.
+func rowHandoff(st *store.Store, projectKey, dir string, git project.Git, workspaces []string) (store.Record, bool, error) {
+	r := hstatus.Reader{ProjectKey: projectKey, Dir: dir, Git: git, Workspaces: workspaces}
+	res, err := hstatus.ResumeFor(st, r)
+	if err != nil || !res.Found || res.Handoff.GitBranch == "" {
+		return res.Handoff, res.Found, err
 	}
-	return st.LatestRecord(projectKey, store.KindHandoff)
+	if r.Branch = project.CurrentBranch(git, dir); r.Branch == "" || r.Branch == res.Handoff.GitBranch {
+		return res.Handoff, res.Found, nil
+	}
+	res, err = hstatus.ResumeFor(st, r)
+	return res.Handoff, res.Found, err
 }
 
-// uncommittedSessionEndItems is Attention kind (b): a session.git_state
-// event with CouldNotObserve false and UncommittedCount > 0 — never a
-// could-not-observe event, which carries no positive evidence at all
+// uncommittedSessionEndItems is Attention kind (b): a working tree whose
+// latest observed session end (gitstate.Latest) had UncommittedCount > 0 —
+// never a could-not-observe end, which carries no positive evidence at all
 // (payload.SessionGitState's own doc: "a writer must never fold that into
 // UncommittedCount 0"). Its reason leads with label, the project's display
 // name, as every project-scoped kind's does.
@@ -600,57 +602,24 @@ func uncommittedSessionEndItems(st *store.Store, git project.Git, projectKey, la
 	if err != nil {
 		return nil, fmt.Errorf("week: session git-state events for %s: %w", projectKey, err)
 	}
-	// Per-command shell sessions older daemons left on disk each carry a
-	// git_state of their own; a shell is not an agent session ending.
-	shellSessions, err := st.ShellSessionIDs()
+	// Each tree's latest OBSERVED session end (gitstate.Latest, the rule the
+	// SessionStart Repo line shares, #4): an earlier dirty end is superseded
+	// by a later clean one in the same tree, and a later could-not-observe
+	// end carries no evidence either way.
+	ends, err := gitstate.Latest(st, git, events)
 	if err != nil {
-		return nil, fmt.Errorf("week: shell sessions for %s: %w", projectKey, err)
-	}
-	// Only each tree's LATEST observable event counts: events arrive
-	// oldest-first, so the last one that is not could-not-observe is that
-	// tree's current state. An earlier dirty event is superseded by a later
-	// clean one in the same tree, and a later could-not-observe event carries
-	// no evidence either way.
-	type observed struct {
-		event store.TimelineEvent
-		gs    payload.SessionGitState
-	}
-	latest := map[string]observed{}
-	var trees []string
-	treeOf := map[string]string{}
-	for _, e := range events {
-		if shellSessions[e.SessionID] {
-			continue
-		}
-		var gs payload.SessionGitState
-		if err := json.Unmarshal([]byte(e.Payload), &gs); err != nil {
-			return nil, fmt.Errorf("week: parse session.git_state payload (event %d): %w", e.ID, err)
-		}
-		if gs.Phase == payload.GitStatePhaseStart || gs.CouldNotObserve || gs.UncommittedCount == nil {
-			continue
-		}
-		tree, known := treeOf[e.SessionID]
-		if !known {
-			if tree, err = st.SessionTree(git, e.SessionID); err != nil {
-				return nil, fmt.Errorf("week: tree of session %s: %w", e.SessionID, err)
-			}
-			treeOf[e.SessionID] = tree
-		}
-		if _, seen := latest[tree]; !seen {
-			trees = append(trees, tree)
-		}
-		latest[tree] = observed{event: e, gs: gs}
+		return nil, fmt.Errorf("week: latest git state for %s: %w", projectKey, err)
 	}
 	var out []AttentionItem
-	for _, tree := range trees {
-		o := latest[tree]
-		if *o.gs.UncommittedCount <= 0 {
+	for _, end := range ends {
+		tree := end.Tree
+		if end.Uncommitted <= 0 {
 			continue
 		}
 		// `backstory dismiss` hid this tree's item until a newer git state
 		// replaces this event as the tree's latest.
-		if dismissed, err := st.GitStateDismissed(o.event); err != nil {
-			return nil, fmt.Errorf("week: dismissal of git-state event %d: %w", o.event.ID, err)
+		if dismissed, err := st.GitStateDismissed(end.Event); err != nil {
+			return nil, fmt.Errorf("week: dismissal of git-state event %d: %w", end.Event.ID, err)
 		} else if dismissed {
 			continue
 		}
@@ -667,11 +636,11 @@ func uncommittedSessionEndItems(st *store.Store, git project.Git, projectKey, la
 				continue
 			}
 		}
-		reason := fmt.Sprintf("%s: session ended with %d uncommitted change(s)", label, *o.gs.UncommittedCount)
-		if o.gs.Branch != "" {
-			reason += " on branch " + o.gs.Branch
+		reason := fmt.Sprintf("%s: session ended with %d uncommitted change(s)", label, end.Uncommitted)
+		if end.Branch != "" {
+			reason += " on branch " + end.Branch
 		}
-		if len(trees) > 1 {
+		if len(ends) > 1 {
 			if tree != "" {
 				reason += " in " + project.WorkspaceRelativeName(tree, workspaces)
 			} else {
@@ -683,7 +652,7 @@ func uncommittedSessionEndItems(st *store.Store, git project.Git, projectKey, la
 			ProjectKey:  projectKey,
 			Reason:      reason,
 			CWD:         tree,
-			EvidenceIDs: []string{strconv.FormatInt(o.event.ID, 10)},
+			EvidenceIDs: []string{strconv.FormatInt(end.Event.ID, 10)},
 		})
 	}
 	return out, nil
@@ -776,8 +745,8 @@ func buildWeekGrid(st *store.Store, keys []string, since, now time.Time, workspa
 // session with no per-repo project_key of its own (decision f3fa04c7 clause
 // 5, task 482b2320): a session started at the workspace root itself, whose
 // file-touching events resolve to a repo/folder that never got its own
-// session. Its handoff resolves exactly as projectHandoff's home-scoped
-// branch does (store.LatestHandoffAt), and the same handoff.Of
+// session. Its handoff resolves as every row's does (rowHandoff, at the
+// label's folder), and the same handoff.Of
 // call feeds both the summary's HandoffStale flag and any
 // AttentionPossiblyStaleHandoff item, so the two can never disagree — the
 // same invariant buildProject's own handoff handling keeps. Unlike
@@ -805,7 +774,7 @@ func buildHomeLabelProject(st *store.Store, since, now time.Time, loc store.Acti
 	}
 
 	var attention []AttentionItem
-	handoff, hasHandoff, err := st.LatestHandoffAt(loc.Dir, git, workspaces)
+	handoff, hasHandoff, err := rowHandoff(st, key, loc.Dir, git, workspaces)
 	if err != nil {
 		return ProjectSummary{}, nil, fmt.Errorf("week: handoff for label %s: %w", loc.Label, err)
 	}

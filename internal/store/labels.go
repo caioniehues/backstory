@@ -130,8 +130,8 @@ type ActiveWorkLocation struct {
 }
 
 // ActiveHomeLabels returns every work-location label (sessionLabels) with
-// activity in [since, asOf], contributed by any session whose folder
-// resolves to home (sessionHomeKey) — decision f3fa04c7 clause 5's home-wide
+// activity in [since, asOf], contributed by any session in home
+// (sessionsForHome) — decision f3fa04c7 clause 5's home-wide
 // label scan: a home's active work locations are the union of every one of
 // its sessions' own OBSERVED labels, independent of whether that session's
 // own project_key happens to equal a per-repo key. Sorted by label.
@@ -140,7 +140,9 @@ type ActiveWorkLocation struct {
 // labels win, but only the included ones: a session whose edits all land in
 // excluded locations (a /tmp scratchpad, Claude's memory dir) or that edited
 // nothing falls back to the label of its own cwd, provided that is included
-// too. A label is never invented from an excluded location.
+// too. A label is never invented from an excluded location. Only Sessions
+// recorded on this Device add labels of their folders and edits; a Peer's
+// counts on the Workspace's own label only (sessionHomeDirs, #5).
 func (s *Store) ActiveHomeLabels(home string, since, asOf time.Time, git project.Git, workspaces []string, keep func(Session) (bool, error), include func(dir string) bool) ([]ActiveWorkLocation, error) {
 	sessions, err := s.sessionsForHome(home, workspaces)
 	if err != nil {
@@ -165,24 +167,9 @@ func (s *Store) ActiveHomeLabels(home string, since, asOf time.Time, git project
 		if !ok || last.Before(since) {
 			continue
 		}
-		edited, err := s.sessionEditedDirs(sess.ID, git, workspaces)
+		dirs, cwdLabel, err := s.sessionHomeDirs(sess, home, git, workspaces, include)
 		if err != nil {
 			return nil, fmt.Errorf("store: active home labels for %s: %w", home, err)
-		}
-		dirs := map[string]string{}
-		for label, dir := range edited {
-			if include == nil || include(dir) {
-				dirs[label] = dir
-			}
-		}
-		// The cwd label always counts (decision 1e53165a) when its folder is
-		// included; it is CWD-attributed (every real-work event belongs to
-		// it) unless an edit already resolved to that same label.
-		cwdLabel := project.Label(sess.CWD, git, workspaces)
-		if _, edits := dirs[cwdLabel]; !edits && (include == nil || include(sess.CWD)) {
-			dirs[cwdLabel] = sess.CWD
-		} else {
-			cwdLabel = ""
 		}
 		for label, dir := range dirs {
 			byCWD := label == cwdLabel
@@ -220,6 +207,45 @@ func (s *Store) ActiveHomeLabels(home string, since, asOf time.Time, git project
 	return out, nil
 }
 
+// sessionHomeDirs is the label -> directory map of the work locations sess
+// adds to home, and the one label (if any) it is CWD-attributed to: every
+// real-work event of sess belongs to that label, not just its file edits.
+//
+// A Session on this Device adds the included folders its file edits touched,
+// and the folder it started in (decision 1e53165a) when that is included,
+// CWD-attributed unless an edit already resolved to the same label. A Peer's
+// Session (origin_device set) is in home only by its own key (project.InHome),
+// and its folder and touched files are paths on the Peer, so they add nothing
+// here (#5): it adds only the Workspace's own folder, CWD-attributed, and
+// nothing to a home that is not a Workspace.
+func (s *Store) sessionHomeDirs(sess Session, home string, git project.Git, workspaces []string, include func(dir string) bool) (map[string]string, string, error) {
+	dirs := map[string]string{}
+	if sess.OriginDevice != "" {
+		ws, ok := project.WorkspaceDirOf(home)
+		if !ok || (include != nil && !include(ws)) {
+			return dirs, "", nil
+		}
+		label := project.Label(ws, git, workspaces)
+		dirs[label] = ws
+		return dirs, label, nil
+	}
+	edited, err := s.sessionEditedDirs(sess.ID, git, workspaces)
+	if err != nil {
+		return nil, "", err
+	}
+	for label, dir := range edited {
+		if include == nil || include(dir) {
+			dirs[label] = dir
+		}
+	}
+	cwdLabel := project.Label(sess.CWD, git, workspaces)
+	if _, edits := dirs[cwdLabel]; edits || (include != nil && !include(sess.CWD)) {
+		return dirs, "", nil
+	}
+	dirs[cwdLabel] = sess.CWD
+	return dirs, cwdLabel, nil
+}
+
 // sessionLastActivity is sess's own last-activity instant — its start, any
 // of its own timeline events, or any record it wrote — bounded above by
 // asOf, the session-scoped analog of LastActivity's project-scoped "as of"
@@ -246,33 +272,18 @@ func (s *Store) sessionLastActivity(sess Session, asOf time.Time) (time.Time, bo
 	return tsFromNanos(maxTS.Int64), true, nil
 }
 
-// sessionHomeKey is the home key sess's own folder resolves to (decision
-// f3fa04c7): the enclosing workspace's key when sess.CWD is a workspace dir
-// or lives inside one at any depth (project.WorkspaceHome), else sess's own
-// stored project_key unchanged. A handoff written from a repo under a
-// workspace is still filed under the repo's own key (decision dc0a4387), so
-// sessionsForHome also admits a session by its project_key.
-func sessionHomeKey(sess Session, workspaces []string) string {
-	if home, ok := project.WorkspaceHome(sess.CWD, workspaces); ok {
-		return home
-	}
-	return sess.ProjectKey
-}
-
-// sessionsForHome returns every session whose own folder resolves
-// (sessionHomeKey) to homeKey, or whose own project_key is homeKey — the
-// membership HandoffFreshness's home-scoped queries need (decision
-// f3fa04c7): "every session whose folder
-// resolves to that home", which can span many distinct project_key values
-// (one per repo under a workspace), not just homeKey's own project_key
-// aliases. Order is unspecified; callers care about membership, not
+// sessionsForHome returns every session that belongs to homeKey
+// (project.InHome, the one home rule): those whose own project_key is homeKey,
+// and, for a Workspace's key, every session recorded on this Device whose
+// folder is in it at any depth (a Peer's joins only by its key, #5). That is
+// the membership HandoffFreshness's home-scoped queries and This Week's
+// Workspace labels need (decision f3fa04c7), which can span many
+// distinct project_key values (one per repo under a Workspace), and it always
+// includes every session whose own Handoffs are filed under homeKey (decision
+// dc0a4387, #5). Order is unspecified; callers care about membership, not
 // sequence.
 //
-// The project_key match keeps a repo under a workspace in its own handoff's
-// home: its sessions' folders resolve to the workspace, but the handoff is
-// filed under the repo's key (decision dc0a4387).
-//
-// It reads only candidates, a superset of the members (sessionHomeKey still
+// It reads only candidates, a superset of the members (project.InHome still
 // decides the rest): sessions with project_key homeKey, and, when homeKey is a
 // workspace's own key, every session whose folder starts with that
 // workspace or is spelled unclean (filepath.Clean could move it inside).
@@ -304,7 +315,7 @@ func (s *Store) sessionsForHome(homeKey string, workspaces []string) ([]Session,
 		if err != nil {
 			return nil, fmt.Errorf("store: sessions for home %s: %w", homeKey, err)
 		}
-		if sess.ProjectKey == homeKey || sessionHomeKey(sess, workspaces) == homeKey {
+		if project.InHome(homeKey, sess.CWD, sess.ProjectKey, sess.OriginDevice != "", workspaces) {
 			out = append(out, sess)
 		}
 	}

@@ -245,7 +245,11 @@ func handleNote(st *store.Store, related search.Searcher, git project.Git, ident
 
 	var visibleAt string
 	if kind == store.KindHandoff {
-		if home, ok := handoffHomeKey(cwd, projectKey, workspaces); ok {
+		// The one home rule (project.HandoffHome). A Handoff homed at the
+		// Workspace this folder is in is shown at a folder (visibleAt), and
+		// that Workspace may have no project row yet.
+		home := project.HandoffHome(cwd, projectKey, workspaces)
+		if ws, ok := project.WorkspaceHome(cwd, workspaces); ok && home == ws {
 			visibleAt = handoffVisibleAt(st, git, sessionID, cwd, workspaces)
 			if err := ensureHomeProject(st, home); err != nil {
 				return errResponse("internal", err.Error())
@@ -364,30 +368,6 @@ func visibleMessage(dir string) string {
 		return ""
 	}
 	return "saved; the next session in " + dir + " will see it"
-}
-
-// handoffHomeKey resolves a kind=handoff record's HOME (decisions f3fa04c7,
-// amended by dc0a4387): the writing session's OWN project_key whenever that
-// key is a git repo, wherever the repo lives — a repo under a workspace dir
-// keeps its handoff so it syncs (SyncIdentityOf) and counts on the repo's
-// row. Only a session with no repo of its own re-homes to the enclosing
-// workspace (project.WorkspaceHome): one whose own key is workspace:-prefixed
-// (started at the workspace root, or in a direct non-git child), or one in a
-// deeper non-git folder under it (its own key is then the bare cwd). workspaces
-// is the caller's already-resolved workspace directory list (task 482b2320):
-// mcp never resolves workspace dirs itself. ok is false when the session
-// keeps its own key: a repo, a folder outside every workspace, or cwd empty.
-func handoffHomeKey(cwd, ownKey string, workspaces []string) (string, bool) {
-	if cwd == "" {
-		return "", false
-	}
-	// project.Key is the git common dir inside a repo, workspace:<dir> for a
-	// workspace root or a direct non-git child, and the bare cwd for any
-	// other non-git folder: only that last spelling needs the check.
-	if ownKey != "" && !project.IsWorkspaceKey(ownKey) && filepath.Clean(ownKey) != filepath.Clean(cwd) {
-		return "", false
-	}
-	return project.WorkspaceHome(cwd, workspaces)
 }
 
 // ensureHomeProject upserts a projects row for a handoff's home key before

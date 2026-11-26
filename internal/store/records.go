@@ -295,15 +295,7 @@ func (s *Store) GetRecord(id string) (Record, error) {
 	return r, nil
 }
 
-// LatestRecord returns the most recently inserted non-tombstoned record of
-// kind in projectKey, ordered by rowid (SCHEMA.md invariant 10's "order by
-// sequence, never ts" applies here too: ts is wall-clock and informational,
-// insertion order is not). found is false when no such record exists.
-func (s *Store) LatestRecord(projectKey string, kind RecordKind) (Record, bool, error) {
-	return s.LatestRecordFrom(projectKey, kind, OriginAny)
-}
-
-// OriginFilter restricts a latest-record lookup by where the record was
+// OriginFilter restricts a Handoffs read by where the record was
 // written: this device, a paired one, or either.
 type OriginFilter int
 
@@ -312,16 +304,6 @@ const (
 	OriginLocal
 	OriginImported
 )
-
-func (f OriginFilter) matches(r Record) bool {
-	switch f {
-	case OriginLocal:
-		return r.OriginDevice == ""
-	case OriginImported:
-		return r.OriginDevice != ""
-	}
-	return true
-}
 
 // sql is the origin clause for a records query ("" for OriginAny).
 func (f OriginFilter) sql() string {
@@ -334,77 +316,11 @@ func (f OriginFilter) sql() string {
 	return ""
 }
 
-// LatestRecordFrom is LatestRecord restricted by origin.
-func (s *Store) LatestRecordFrom(projectKey string, kind RecordKind, from OriginFilter) (Record, bool, error) {
-	return s.LatestRecordFromWhere(projectKey, kind, from, nil)
-}
-
-// maxRecordScanWhere bounds LatestRecordFromWhere's newest-first scan.
-const maxRecordScanWhere = 1000
-
-// LatestRecordFromWhere is LatestRecordFrom restricted to records for which
-// keep returns true (nil keeps all). It is how Resume asks for the newest
-// handoff on the reader's branch.
-func (s *Store) LatestRecordFromWhere(projectKey string, kind RecordKind, from OriginFilter, keep func(Record) bool) (Record, bool, error) {
-	if keep != nil {
-		projectKey = s.canonicalizeProjectKey(projectKey)
-		order := "rowid DESC"
-		if kind == KindHandoff {
-			order = "ts DESC, id DESC"
-		}
-		//nolint:gosec // from.sql() and order are fixed fragments, never caller text
-		rows, err := s.db.Query(`SELECT id FROM records
-			WHERE project_key = ? AND kind = ? AND tombstoned_at IS NULL`+from.sql()+`
-			ORDER BY `+order+` LIMIT ?`, projectKey, string(kind), maxRecordScanWhere)
-		if err != nil {
-			return Record{}, false, fmt.Errorf("store: latest %s record for project %s: %w", kind, projectKey, err)
-		}
-		ids, err := scanIDs(rows)
-		if err != nil {
-			return Record{}, false, fmt.Errorf("store: latest %s record for project %s: %w", kind, projectKey, err)
-		}
-		recs, err := s.getRecords(ids)
-		if err != nil {
-			return Record{}, false, err
-		}
-		for _, r := range recs {
-			if keep(r) {
-				return r, true, nil
-			}
-		}
-		return Record{}, false, nil
-	}
-	projectKey = s.canonicalizeProjectKey(projectKey)
-	var id string
-	// Handoffs order by NewerHandoff's rule (ts, then id): a synced handoff
-	// is inserted when it arrives, not when it was written. Other kinds keep
-	// insertion order.
-	order := "rowid DESC"
-	if kind == KindHandoff {
-		order = "ts DESC, id DESC"
-	}
-	//nolint:gosec // from.sql() and order are fixed fragments, never caller text
-	err := s.db.QueryRow(`SELECT id FROM records
-		WHERE project_key = ? AND kind = ? AND tombstoned_at IS NULL`+from.sql()+`
-		ORDER BY `+order+` LIMIT 1`, projectKey, string(kind)).Scan(&id)
-	if errors.Is(err, sql.ErrNoRows) {
-		return Record{}, false, nil
-	}
-	if err != nil {
-		return Record{}, false, fmt.Errorf("store: latest %s record for project %s: %w", kind, projectKey, err)
-	}
-	rec, err := s.GetRecord(id)
-	if err != nil {
-		return Record{}, false, err
-	}
-	return rec, true, nil
-}
-
 // RecordsForProject returns every non-tombstoned record of kind in
 // projectKey, newest first (rowid DESC — insertion order, never ts;
 // SCHEMA.md invariant 10 applies to record ordering the same way it applies
 // to timeline_events), capped at limit rows. It is recall's decisions
-// query: unlike LatestRecord (one row), a caller wants every declared
+// query: a caller wants every declared
 // decision for the project, most recent first.
 func (s *Store) RecordsForProject(projectKey string, kind RecordKind, limit int) ([]Record, error) {
 	projectKey = s.canonicalizeProjectKey(projectKey)

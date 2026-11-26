@@ -11,15 +11,16 @@ import (
 
 func mustInsertHandoffWithNext(t *testing.T, s *store.Store, sessionID, text, next string) store.Record {
 	t.Helper()
-	if _, err := s.InsertRecord(store.InsertRecordParams{
+	id, err := s.InsertRecord(store.InsertRecordParams{
 		Identity: store.Identity{Kind: store.IdentityAgent}, Kind: store.KindHandoff, Text: text,
 		SessionID: sessionID, ProjectKey: testProjectKey, Next: next,
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("InsertRecord handoff: %v", err)
 	}
-	rec, ok, err := s.LatestRecord(testProjectKey, store.KindHandoff)
-	if err != nil || !ok {
-		t.Fatalf("LatestRecord: ok=%v err=%v", ok, err)
+	rec, err := s.GetRecord(id)
+	if err != nil {
+		t.Fatalf("GetRecord: %v", err)
 	}
 	return rec
 }

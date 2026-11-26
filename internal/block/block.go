@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RidgetopAi/backstory/internal/gitstate"
 	hstatus "github.com/RidgetopAi/backstory/internal/handoff"
 	"github.com/RidgetopAi/backstory/internal/ident"
 	"github.com/RidgetopAi/backstory/internal/payload"
@@ -228,7 +229,7 @@ func Render(p Params) (string, error) {
 		return "", fmt.Errorf("block: shell sessions: %w", err)
 	}
 	testsLine := testsLine(allEvents, p.Now)
-	repoLine, err := repoStateLine(p, readerBranch, handoff, hasHandoff, deltaEvents, shellSessions)
+	repoLine, err := repoStateLine(p, readerBranch, handoff, hasHandoff, deltaEvents)
 	if err != nil {
 		return "", err
 	}
@@ -356,16 +357,6 @@ func (pk resumePick) branchClause(readerBranch string) string {
 	return ", from branch " + pk.rec.GitBranch + "; you are on " + readerBranch
 }
 
-// branchKeep is the Resume candidate filter for a reader on readerBranch: a
-// handoff written on that branch, or one with no known branch (old data
-// keeps working). nil, keep everything, when the reader's branch is unknown.
-func branchKeep(readerBranch string) func(store.Record) bool {
-	if readerBranch == "" {
-		return nil
-	}
-	return func(r store.Record) bool { return r.GitBranch == "" || r.GitBranch == readerBranch }
-}
-
 // branchPointerMaxAge is how old another branch's newest handoff may be and
 // still earn an "Also on branch" pointer.
 const branchPointerMaxAge = 14 * 24 * time.Hour
@@ -432,73 +423,41 @@ func branchPointerLines(p Params, readerBranch string, pick resumePick) (string,
 	return strings.Join(lines, "\n"), nil
 }
 
-// pickResume is the RESUME rule across devices (decision 2ac4c54f, D5): the
-// newest current handoff for the location, local and imported alike (imported
-// ones are homed on the local project), newest by ts then id. The loser, when
-// it is not superseded, becomes the also line. Each side is resolved by the
-// same location rule resolveResumeHandoff has always applied.
-//
-// With a known reader branch the newest handoff written on that branch (or
-// with no known branch) wins; with none there, the repo-wide newest is the
-// fallback and is marked otherBranch.
+// pickResume is the Resume handoff (handoff.ResumeFor) for the reader at
+// p.CWD on readerBranch, plus what the block adds where the reader's
+// Handoffs are filed at a Workspace (project.HandoffHome: its root, or a
+// non-git folder under it at any depth): the Handoff's location label, or
+// with none a pointer line naming the projects that have one.
 func pickResume(p Params, readerBranch string) (resumePick, error) {
-	keep := branchKeep(readerBranch)
-	pk, err := pickResumeWhere(p, keep)
-	if err != nil || keep == nil || pk.found {
+	res, err := hstatus.ResumeFor(p.Store, hstatus.Reader{
+		ProjectKey: p.ProjectKey, Dir: p.CWD, Branch: readerBranch, Git: p.Git, Workspaces: p.WorkspaceDirs,
+	})
+	if err != nil {
+		return resumePick{}, err
+	}
+	pk := resumePick{rec: res.Handoff, found: res.Found, also: res.Also, otherBranch: res.OtherBranch}
+	if p.CWD == "" {
+		return pk, nil
+	}
+	home := project.HandoffHome(p.CWD, p.ProjectKey, p.WorkspaceDirs)
+	if !project.IsWorkspaceKey(home) {
+		// The reader's Handoffs are filed at its own Project (a repo, under a
+		// Workspace or not, or a folder outside every Workspace): no label,
+		// the caller is already inside it.
+		return pk, nil
+	}
+	if !pk.found {
+		others, err := p.Store.HandoffsByWriter(home)
+		if err != nil {
+			return resumePick{}, fmt.Errorf("block: root handoffs: %w", err)
+		}
+		pk.pointer, err = projectPointerLine(p.Store, others, p.Git, p.WorkspaceDirs)
 		return pk, err
 	}
-	pk, err = pickResumeWhere(p, nil)
-	if err == nil && pk.found && pk.rec.GitBranch != "" && pk.rec.GitBranch != readerBranch {
-		pk.otherBranch = true
-	}
-	return pk, err
-}
-
-func pickResumeWhere(p Params, keep func(store.Record) bool) (resumePick, error) {
-	loc, locOK, locLabel, pointer, err := resolveResumeHandoff(p.Store, p.ProjectKey, p.CWD, p.Git, p.WorkspaceDirs, store.OriginLocal, keep)
-	if err != nil {
-		return resumePick{}, err
-	}
-	imp, impOK, impLabel, _, err := resolveResumeHandoff(p.Store, p.ProjectKey, p.CWD, p.Git, p.WorkspaceDirs, store.OriginImported, keep)
-	if err != nil {
-		return resumePick{}, err
-	}
-	switch {
-	case !impOK:
-		return resumePick{rec: loc, found: locOK, label: locLabel, pointer: pointer}, nil
-	case !locOK:
-		return resumePick{rec: imp, found: true, label: impLabel}, nil
-	}
-	win, winLabel, lose := loc, locLabel, imp
-	if newerHandoff(imp, loc) {
-		win, winLabel, lose = imp, impLabel, loc
-	}
-	// A handoff that the other one supersedes is no longer current: it
-	// cannot be the Resume line, and it earns no also line.
-	loserSuperseded, err := p.Store.IsSuperseded(lose.ID)
-	if err != nil {
-		return resumePick{}, err
-	}
-	winnerSuperseded, err := p.Store.IsSuperseded(win.ID)
-	if err != nil {
-		return resumePick{}, err
-	}
-	if winnerSuperseded && !loserSuperseded {
-		win, winLabel, lose = lose, loseLabel(lose, locLabel, impLabel, loc), win
-		loserSuperseded = true
-	}
-	pk := resumePick{rec: win, found: true, label: winLabel}
-	if !loserSuperseded {
-		pk.also = &lose
+	if pk.label, err = p.Store.HandoffLabel(pk.rec, p.Git, p.WorkspaceDirs); err != nil {
+		return resumePick{}, fmt.Errorf("block: resume handoff label: %w", err)
 	}
 	return pk, nil
-}
-
-func loseLabel(r store.Record, locLabel, impLabel string, loc store.Record) string {
-	if r.ID == loc.ID {
-		return locLabel
-	}
-	return impLabel
 }
 
 // newerHandoff is store.NewerHandoff, the one newest-handoff rule.
@@ -543,83 +502,6 @@ func handoffAuthorClause(author, reader string) string {
 // maxPointerProjects caps how many projects the workspace-root pointer line
 // names before it collapses the rest into "+N more".
 const maxPointerProjects = 3
-
-// resolveResumeHandoff is decision f3fa04c7's RESUME rule, unified by task
-// ed31b744: the newest non-tombstoned handoff that belongs to the caller's
-// location (store.LatestHandoffAt — the one resolver recall, export,
-// records and This Week's row share): the repo-key handoffs plus the
-// workspace-homed ones whose writing session is labelled with that
-// location; at the workspace root itself, exactly those labelled with the
-// root. At the root with none, no handoff body but a one-line pointer
-// (returned as the string) naming the projects that have one. With no
-// workspace involved at all (cwd empty, or outside every configured
-// workspace), the pre-f3fa04c7 behavior — the newest handoff for
-// projectKey, unchanged, no label.
-func resolveResumeHandoff(st *store.Store, projectKey, cwd string, git project.Git, workspaces []string, from store.OriginFilter, keep func(store.Record) bool) (store.Record, bool, string, string, error) {
-	if cwd == "" {
-		h, ok, err := st.LatestRecordFromWhere(projectKey, store.KindHandoff, from, keep)
-		return h, ok, "", "", err
-	}
-	home, ok := project.WorkspaceHome(cwd, workspaces)
-	if !ok {
-		h, ok, err := st.LatestRecordFromWhere(projectKey, store.KindHandoff, from, keep)
-		return h, ok, "", "", err
-	}
-
-	h, found, err := st.LatestHandoffAtFromWhere(cwd, git, workspaces, from, keep)
-	if err != nil {
-		return store.Record{}, false, "", "", fmt.Errorf("block: location handoff: %w", err)
-	}
-	if home != projectKey {
-		// Inside a specific repo under the workspace: no label shown, the
-		// caller is already inside it.
-		return h, found, "", "", nil
-	}
-
-	// At the workspace root itself — or a non-git direct child, which
-	// shares the root's key (decision 7a2556b6): with no handoff of its own
-	// it carries the root's.
-	if !found {
-		if root, ok := workspaceRootOf(cwd, home, workspaces); ok && root != filepath.Clean(cwd) {
-			h, found, err = st.LatestHandoffAtFromWhere(root, git, workspaces, from, keep)
-			if err != nil {
-				return store.Record{}, false, "", "", fmt.Errorf("block: root handoff: %w", err)
-			}
-		}
-	}
-	if !found {
-		if from == store.OriginImported {
-			return store.Record{}, false, "", "", nil
-		}
-		others, err := st.HandoffsByWriter(home)
-		if err != nil {
-			return store.Record{}, false, "", "", fmt.Errorf("block: root handoffs: %w", err)
-		}
-		pointer, err := projectPointerLine(st, others, git, workspaces)
-		return store.Record{}, false, "", pointer, err
-	}
-	label, err := st.HandoffLabel(h, git, workspaces)
-	if err != nil {
-		return store.Record{}, false, "", "", fmt.Errorf("block: resume handoff label: %w", err)
-	}
-	return h, true, label, "", nil
-}
-
-// workspaceRootOf is the configured workspace directory whose home key is
-// home and that holds cwd (cwd itself, or a direct child of it).
-func workspaceRootOf(cwd, home string, workspaces []string) (string, bool) {
-	cwd = filepath.Clean(cwd)
-	for _, w := range workspaces {
-		w = filepath.Clean(w)
-		if cwd != w && filepath.Dir(cwd) != w {
-			continue
-		}
-		if h, ok := project.WorkspaceHome(w, []string{w}); ok && h == home {
-			return w, true
-		}
-	}
-	return "", false
-}
 
 // projectPointerLine renders the one-line stand-in for a root resume with no
 // root-written handoff: each project (by label) with its latest handoff id,
@@ -803,63 +685,33 @@ func formatAge(d time.Duration) string {
 
 // repoStateLine is slot 2's observed repo state, `Repo: branch <b> · <n>
 // uncommitted · <k> commits since the handoff`: the branch and uncommitted
-// count come from the newest non-shell session.git_state since the handoff
-// (the last session end; with could_not_observe there is no count to show),
-// the commits from the handoff's git stamp against the repo as it is now.
-// Each part is shown only when observed; "" when none is.
+// count come from the reader's working tree's newest OBSERVED session end
+// since the handoff (gitstate.LatestIn, the rule This Week's uncommitted
+// items use, #4): a later could-not-observe end carries no evidence and is
+// skipped, so the age says how old the shown state is. The commits come from
+// the handoff's git stamp against the repo as it is now. Each part is shown
+// only when observed; "" when none is.
 //
 // With an absolute CWD only sessions in the READER's own working tree count
-// (project.WorkTree, the rule This Week's uncommitted items use): the project
-// key is the repo's git common dir, shared by the main checkout and every
-// worktree, so another tree's last session end says nothing about this one.
-// Without a CWD (a caller that never sets one) every session counts, as
-// before.
-func repoStateLine(p Params, readerBranch string, handoff store.Record, hasHandoff bool, events []store.TimelineEvent, shellSessions map[string]bool) (string, error) {
+// (project.WorkTree): the project key is the repo's git common dir, shared by
+// the main checkout and every worktree, so another tree's last session end
+// says nothing about this one. Without a CWD (a caller that never sets one)
+// every session counts, as before.
+func repoStateLine(p Params, readerBranch string, handoff store.Record, hasHandoff bool, events []store.TimelineEvent) (string, error) {
 	readerTree := ""
 	if filepath.IsAbs(p.CWD) {
 		readerTree = project.WorkTree(p.Git, filepath.Clean(p.CWD))
 	}
-	// Newest first (events arrive oldest-first): the first session-end state
-	// from the reader's tree is the one shown, so no older session's tree is
-	// ever resolved. Sessions from other trees still are, each once per
-	// folder (Render's per-render CachedGit), so the cost is per distinct
-	// tree, not per session.
-	treeOf := map[string]string{}
-	var gs *payload.SessionGitState
-	var gsTS time.Time
-	for i := len(events) - 1; i >= 0 && gs == nil; i-- {
-		e := events[i]
-		if e.Kind != payload.KindSessionGitState || shellSessions[e.SessionID] {
-			continue
-		}
-		var v payload.SessionGitState
-		if json.Unmarshal([]byte(e.Payload), &v) != nil || v.Phase == payload.GitStatePhaseStart {
-			continue
-		}
-		if readerTree != "" {
-			tree, known := treeOf[e.SessionID]
-			if !known {
-				var err error
-				if tree, err = p.Store.SessionTree(p.Git, e.SessionID); err != nil {
-					return "", fmt.Errorf("block: tree of session %s: %w", e.SessionID, err)
-				}
-				treeOf[e.SessionID] = tree
-			}
-			if tree != readerTree {
-				continue
-			}
-		}
-		gs = &v
-		gsTS = e.TS
+	end, observed, err := gitstate.LatestIn(p.Store, p.Git, events, readerTree)
+	if err != nil {
+		return "", fmt.Errorf("block: repo state: %w", err)
 	}
 	var parts []string
-	if gs != nil && !gs.CouldNotObserve {
-		if gs.Branch != "" {
-			parts = append(parts, "branch "+gs.Branch)
+	if observed {
+		if end.Branch != "" {
+			parts = append(parts, "branch "+end.Branch)
 		}
-		if gs.UncommittedCount != nil {
-			parts = append(parts, fmt.Sprintf("%d uncommitted at last session end (%s)", *gs.UncommittedCount, formatAge(p.Now.Sub(gsTS))))
-		}
+		parts = append(parts, fmt.Sprintf("%d uncommitted at last session end (%s)", end.Uncommitted, formatAge(p.Now.Sub(end.At()))))
 	}
 	if hasHandoff && handoff.GitBranch != "" && readerBranch != "" && handoff.GitBranch != readerBranch {
 		// Another branch's handoff: this branch's commits are not "since" it.

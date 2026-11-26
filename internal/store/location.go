@@ -1,8 +1,6 @@
 package store
 
 import (
-	"database/sql"
-	"errors"
 	"fmt"
 	"path/filepath"
 	"sort"
@@ -192,9 +190,10 @@ func (s *Store) RecordsForLocation(ls LocationScope, limit int) ([]Record, error
 
 // locationMatcher is the ONE membership rule for "does this session belong
 // to location L": the session is filed under the location's own repo key,
-// or its observed work-location labels (sessionLabels) include the
-// location's label. LocationScope (every record/session reader and purge)
-// and LatestHandoffAt (the block's Resume, This Week's row handoff) both
+// or, for a session recorded on this Device, its observed work-location
+// labels (sessionLabels) include the location's label. A Peer's session
+// joins only by its key (#5). LocationScope (every record/session reader and purge)
+// and Handoffs (the Resume handoff's candidates) both
 // decide through it, so no two surfaces can disagree about which handoff
 // belongs to a location (task ed31b744).
 type locationMatcher struct {
@@ -205,6 +204,11 @@ type locationMatcher struct {
 func (s *Store) sessionInLocation(m locationMatcher, sess Session, git project.Git, workspaces []string) (bool, error) {
 	if m.repoKey != "" && s.canonicalizeProjectKey(sess.ProjectKey) == m.repoKey {
 		return true, nil
+	}
+	if sess.OriginDevice != "" {
+		// A Peer's session joins only by its own key: its folder and the
+		// files it touched are paths on the Peer (#5).
+		return false, nil
 	}
 	labels, err := s.sessionLabels(sess, git, workspaces)
 	if err != nil {
@@ -246,157 +250,14 @@ func (s *Store) locationScopeForKeyQ(q purgeQuerier, key string) (LocationScope,
 
 // NewerHandoff reports whether a is a newer handoff than b: later ts, then
 // greater id. It is the one newest-handoff rule: SessionStart's Resume pick
-// calls it, and the SQL ORDER BY in LatestHandoffAtFrom and LatestRecordFrom
-// (handoff kind) spells the same ordering, so this-week and Resume cannot
-// disagree after a sync (insertion order equals newest only on one machine).
+// calls it, and the SQL ORDER BY in Handoffs spells the same ordering, so
+// no two readers disagree after a sync (insertion order equals newest only
+// on one machine).
 func NewerHandoff(a, b Record) bool {
 	if !a.TS.Equal(b.TS) {
 		return a.TS.After(b.TS)
 	}
 	return a.ID > b.ID
-}
-
-// maxHandoffScanForLocation bounds LatestHandoffAt's newest-first scan, the
-// read-side safety cap for a workspace with years of handoff history.
-const maxHandoffScanForLocation = 1000
-
-// LatestHandoffAt returns the newest non-tombstoned handoff belonging to
-// dir under the same membership rule as LocationScope.HasRecord, without
-// building the whole scope: candidates are the handoffs filed under dir's
-// repo key and under its workspace home key, newest first by NewerHandoff's
-// rule (ts, then id) — never insertion order, which a sync scrambles.
-func (s *Store) LatestHandoffAt(dir string, git project.Git, workspaces []string) (Record, bool, error) {
-	return s.LatestHandoffAtFrom(dir, git, workspaces, OriginAny)
-}
-
-// LatestHandoffAtFrom is LatestHandoffAt restricted to records written on
-// this device (OriginLocal) or imported from a paired one (OriginImported).
-func (s *Store) LatestHandoffAtFrom(dir string, git project.Git, workspaces []string, from OriginFilter) (Record, bool, error) {
-	return s.LatestHandoffAtFromWhere(dir, git, workspaces, from, nil)
-}
-
-// LatestHandoffAtFromWhere is LatestHandoffAtFrom restricted to handoffs for
-// which keep returns true (nil keeps all).
-//
-// At a workspace dir itself it is the newest handoff overall (decision
-// f3fa04c7 §3, amended by dc0a4387): the dir's own candidates above or, when
-// newer, the newest handoff homed in a repo under that workspace.
-func (s *Store) LatestHandoffAtFromWhere(dir string, git project.Git, workspaces []string, from OriginFilter, keep func(Record) bool) (Record, bool, error) {
-	dir = filepath.Clean(dir)
-	own, found, err := s.latestHandoffAtOwn(dir, git, workspaces, from, keep)
-	if err != nil {
-		return Record{}, false, err
-	}
-	for _, w := range workspaces {
-		if filepath.Clean(w) != dir {
-			continue
-		}
-		repoH, ok, err := s.latestRepoHandoffUnder(dir, from, keep)
-		if err != nil {
-			return Record{}, false, err
-		}
-		if ok && (!found || NewerHandoff(repoH, own)) {
-			return repoH, true, nil
-		}
-		break
-	}
-	return own, found, nil
-}
-
-// latestHandoffAtOwn is LatestHandoffAtFromWhere's own-candidates read: the
-// handoffs under dir's repo key and workspace home key that belong to dir.
-func (s *Store) latestHandoffAtOwn(dir string, git project.Git, workspaces []string, from OriginFilter, keep func(Record) bool) (Record, bool, error) {
-	m := locationMatcher{label: project.Label(dir, git, workspaces)}
-	var keys []any
-	if key := project.Key(dir, git, workspaces); !project.IsWorkspaceKey(key) {
-		m.repoKey = s.canonicalizeProjectKey(key)
-		keys = append(keys, m.repoKey)
-	}
-	if home, ok := project.WorkspaceHome(dir, workspaces); ok {
-		keys = append(keys, s.canonicalizeProjectKey(home))
-	}
-	if len(keys) == 0 {
-		// Neither a repo nor under a workspace: the dir's own key.
-		key := s.canonicalizeProjectKey(project.Key(dir, git, workspaces))
-		m.repoKey = key
-		keys = append(keys, key)
-	}
-	marks := strings.TrimSuffix(strings.Repeat("?,", len(keys)), ",")
-	args := append([]any{string(KindHandoff)}, keys...)
-	args = append(args, maxHandoffScanForLocation)
-	//nolint:gosec // marks is only "?" placeholders; every value is bound
-	query := `SELECT id FROM records
-		WHERE kind = ? AND tombstoned_at IS NULL AND project_key IN (` + marks + `)
-		ORDER BY ts DESC, id DESC LIMIT ?`
-	rows, err := s.db.Query(query, args...)
-	if err != nil {
-		return Record{}, false, fmt.Errorf("store: latest handoff at %s: %w", dir, err)
-	}
-	ids, err := scanIDs(rows)
-	if err != nil {
-		return Record{}, false, fmt.Errorf("store: latest handoff at %s: %w", dir, err)
-	}
-	recs, err := s.getRecords(ids)
-	if err != nil {
-		return Record{}, false, fmt.Errorf("store: latest handoff at %s: %w", dir, err)
-	}
-	for _, h := range recs {
-		if !from.matches(h) || (keep != nil && !keep(h)) {
-			continue
-		}
-		if m.repoKey != "" && h.ProjectKey == m.repoKey {
-			return h, true, nil
-		}
-		if h.SessionID == "" {
-			continue
-		}
-		sess, err := s.getSession(h.SessionID)
-		if err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				continue
-			}
-			return Record{}, false, fmt.Errorf("store: latest handoff at %s: %w", dir, err)
-		}
-		in, err := s.sessionInLocation(m, sess, git, workspaces)
-		if err != nil {
-			return Record{}, false, fmt.Errorf("store: latest handoff at %s: %w", dir, err)
-		}
-		if in {
-			return h, true, nil
-		}
-	}
-	return Record{}, false, nil
-}
-
-// latestRepoHandoffUnder returns the newest non-tombstoned handoff homed in a
-// repo (a non-workspace, non-placeholder project key) whose toplevel lies
-// under workspaceDir — decision dc0a4387: a handoff is filed under its
-// writing session's repo even beneath a workspace, so the workspace root's
-// "newest handoff overall" must read them too.
-func (s *Store) latestRepoHandoffUnder(workspaceDir string, from OriginFilter, keep func(Record) bool) (rec Record, ok bool, err error) {
-	prefix := strings.TrimSuffix(filepath.Clean(workspaceDir), string(filepath.Separator)) + string(filepath.Separator)
-	rows, err := s.db.Query(`SELECT r.id FROM records r JOIN projects p ON p.key = r.project_key
-		WHERE r.kind = ? AND r.tombstoned_at IS NULL
-		AND r.project_key NOT LIKE 'workspace:%' AND r.project_key NOT LIKE 'sync:%'
-		AND instr(p.toplevel, ?) = 1
-		ORDER BY r.ts DESC, r.id DESC LIMIT ?`, string(KindHandoff), prefix, maxHandoffScanForLocation)
-	if err != nil {
-		return Record{}, false, fmt.Errorf("store: latest repo handoff under %s: %w", workspaceDir, err)
-	}
-	ids, err := scanIDs(rows)
-	if err != nil {
-		return Record{}, false, fmt.Errorf("store: latest repo handoff under %s: %w", workspaceDir, err)
-	}
-	recs, err := s.getRecords(ids)
-	if err != nil {
-		return Record{}, false, fmt.Errorf("store: latest repo handoff under %s: %w", workspaceDir, err)
-	}
-	for _, h := range recs {
-		if from.matches(h) && (keep == nil || keep(h)) {
-			return h, true, nil
-		}
-	}
-	return Record{}, false, nil
 }
 
 // ResolveProjectRef resolves a caller-supplied project reference — a

@@ -76,8 +76,8 @@ func TestHandoffFreshnessScopesToHomeAcrossRepos(t *testing.T) {
 
 // TestHandoffFreshnessRepoUnderWorkspaceSeesLaterEdit: a handoff written from
 // a session inside a git repo that lives under a workspace dir keeps the
-// repo's own key (decision dc0a4387: mcp's handoffHomeKey and the rehome
-// migration). A LATER session in that same repo editing the file the handoff
+// repo's own key (decision dc0a4387: project.HandoffHome, which note and the
+// rehome migration both file by). A LATER session in that same repo editing the file the handoff
 // names must flag it possibly stale, exactly as it would for a repo outside
 // every workspace.
 func TestHandoffFreshnessRepoUnderWorkspaceSeesLaterEdit(t *testing.T) {

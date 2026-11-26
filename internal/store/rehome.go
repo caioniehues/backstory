@@ -6,31 +6,63 @@ import (
 	"time"
 
 	"github.com/RidgetopAi/backstory/internal/forgetting"
+	"github.com/RidgetopAi/backstory/internal/project"
 )
 
-// rehomeHandoffWhere selects the handoffs the home migration moves (decision
-// dc0a4387): a live (not tombstoned) kind=handoff record filed under a
-// workspace key whose writing session is filed under a real repo key — not a
-// workspace key and not a sync: placeholder. Tombstoned handoffs are left
-// alone: their text is gone and they never reached a peer, so there is
-// nothing to sync and nothing to count.
-const rehomeHandoffWhere = `r.kind = 'handoff' AND r.tombstoned_at IS NULL
+// rehomeCandidates selects the Handoffs the home migration considers
+// (decision dc0a4387): a live (not tombstoned) kind=handoff record filed under
+// a Workspace key by a Session not keyed to a Peer's placeholder. Tombstoned
+// Handoffs are left alone: their text is gone and they never reached a Peer,
+// so there is nothing to sync and nothing to count.
+const rehomeCandidates = `SELECT r.id, s.cwd, COALESCE(s.project_key, '') FROM records r JOIN sessions s ON s.id = r.session_id
+	WHERE r.kind = 'handoff' AND r.tombstoned_at IS NULL
 	AND r.project_key LIKE 'workspace:%'
-	AND s.project_key IS NOT NULL AND s.project_key <> ''
-	AND s.project_key NOT LIKE 'workspace:%' AND s.project_key NOT LIKE 'sync:%'`
+	AND (s.project_key IS NULL OR s.project_key NOT LIKE 'sync:%')
+	ORDER BY r.id`
 
-// rehomeHandoffs moves every workspace-homed handoff written by a repo-keyed
-// session onto that repo's key, so it syncs under the repo's identity and
-// counts on the repo's row. It backs the store up first (VACUUM INTO, the
-// sweep pattern), then in one transaction drops records_no_update, rewrites
-// project_key, recreates the trigger from its one definition, and queues a
-// sync_changes row per moved record. Idempotent: once moved, a handoff no
-// longer matches, so a later Open writes neither a backup nor a row.
-func (s *Store) rehomeHandoffs() error {
-	var n int
-	if err := s.db.QueryRow(`SELECT COUNT(*) FROM records r JOIN sessions s ON s.id = r.session_id WHERE ` + rehomeHandoffWhere).Scan(&n); err != nil {
-		return fmt.Errorf("store: rehome handoffs: count: %w", err)
+// rehomeMove is one Handoff the migration moves, and the key it moves to.
+type rehomeMove struct{ id, newKey string }
+
+// rehomeMoves is every Workspace-filed Handoff whose writer's Handoff home
+// (project.HandoffHome, the rule note writes by) is a Project instead: a
+// Handoff written in a repo under a Workspace before the rule kept it on the
+// repo. A Handoff the rule itself files at a Workspace stays.
+func (s *Store) rehomeMoves(workspaces []string) ([]rehomeMove, error) {
+	rows, err := s.db.Query(rehomeCandidates)
+	if err != nil {
+		return nil, fmt.Errorf("store: rehome handoffs: candidates: %w", err)
 	}
+	defer func() { _ = rows.Close() }()
+	var out []rehomeMove
+	for rows.Next() {
+		var id, cwd, key string
+		if err := rows.Scan(&id, &cwd, &key); err != nil {
+			return nil, fmt.Errorf("store: rehome handoffs: candidates: %w", err)
+		}
+		if home := project.HandoffHome(cwd, key, workspaces); home != "" && !project.IsWorkspaceKey(home) {
+			out = append(out, rehomeMove{id: id, newKey: home})
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: rehome handoffs: candidates: %w", err)
+	}
+	return out, nil
+}
+
+// rehomeHandoffs moves every Workspace-filed Handoff whose writer's Handoff
+// home is a Project onto that Project's key (rehomeMoves), so it syncs under
+// the repo's identity and counts on the repo's row. It backs the store up
+// first (VACUUM INTO, the sweep pattern), then in one transaction drops
+// records_no_update, rewrites project_key, recreates the trigger from its one
+// definition, and queues a sync_changes row per moved record. Idempotent:
+// once moved, a Handoff is no longer Workspace-filed, so a later Open writes
+// neither a backup nor a row.
+func (s *Store) rehomeHandoffs(workspaces []string) error {
+	moves, err := s.rehomeMoves(workspaces)
+	if err != nil {
+		return err
+	}
+	n := len(moves)
 	if n == 0 {
 		return nil
 	}
@@ -46,9 +78,24 @@ func (s *Store) rehomeHandoffs() error {
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	if _, err := tx.Exec(`CREATE TEMP TABLE rehome_ids AS
-		SELECT r.id AS id, s.project_key AS new_key FROM records r JOIN sessions s ON s.id = r.session_id WHERE ` + rehomeHandoffWhere); err != nil {
-		return fmt.Errorf("store: rehome handoffs: select: %w", err)
+	if _, err := tx.Exec(`CREATE TEMP TABLE rehome_ids (id TEXT PRIMARY KEY, new_key TEXT NOT NULL)`); err != nil {
+		return fmt.Errorf("store: rehome handoffs: scratch table: %w", err)
+	}
+	for _, m := range moves {
+		if _, err := tx.Exec(`INSERT INTO rehome_ids (id, new_key) VALUES (?, ?)`, m.id, m.newKey); err != nil {
+			return fmt.Errorf("store: rehome handoffs: select %s: %w", m.id, err)
+		}
+	}
+	// Another Open may have moved or Tombstoned one since rehomeMoves read it.
+	if _, err := tx.Exec(`DELETE FROM rehome_ids WHERE id NOT IN (SELECT id FROM records
+		WHERE kind = 'handoff' AND tombstoned_at IS NULL AND project_key LIKE 'workspace:%')`); err != nil {
+		return fmt.Errorf("store: rehome handoffs: recheck: %w", err)
+	}
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM rehome_ids`).Scan(&n); err != nil {
+		return fmt.Errorf("store: rehome handoffs: recheck: %w", err)
+	}
+	if n == 0 {
+		return nil
 	}
 
 	// records.project_key foreign-keys into projects(key); the session's own

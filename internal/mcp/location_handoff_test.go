@@ -245,6 +245,36 @@ func TestRepoRowHandoffMatchesBlockResume(t *testing.T) {
 	}
 }
 
+// A query that matches nothing, asked from W/demo on its default branch, falls
+// back to the Handoff the SessionStart block there resumes, the one on that
+// branch, not a newer one written on feature (#3).
+func TestRecallNoMatchFallsBackToTheCallersResumeHandoff(t *testing.T) {
+	f := newLocFixture(t)
+	gitIn(t, f.demo, "commit", "-q", "--allow-empty", "-m", "c1")
+	base := gitIn(t, f.demo, "rev-parse", "--abbrev-ref", "HEAD")
+	onBase := f.handoff(f.demo, filepath.Join(f.demo, "a.go"), "DEMO base handoff")
+	gitIn(t, f.demo, "checkout", "-q", "-b", "feature")
+	time.Sleep(10 * time.Millisecond)
+	f.handoff(f.demo, filepath.Join(f.demo, "a.go"), "DEMO feature handoff")
+	gitIn(t, f.demo, "checkout", "-q", base)
+
+	if got := f.resume(f.demo); got != onBase {
+		t.Fatalf("block Resume in W/demo on %s = %q, want %s", base, got, onBase)
+	}
+	raw, _ := json.Marshal(RecallParams{Query: "zzqx nonexistent"})
+	resp := handleRecall(f.st, search.New(f.st), f.git, ident.Identity{CWD: f.demo, ProjectKey: f.key(f.demo)}, raw, f.ws)
+	if resp.Error != nil {
+		t.Fatalf("handleRecall: %v", resp.Error)
+	}
+	var res RecallResult
+	if err := json.Unmarshal(resp.Result, &res); err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Items) != 1 || res.Items[0].ID != onBase {
+		t.Errorf("recall's no-match stand-in = %+v, want only %s, the block's Resume", res.Items, onBase)
+	}
+}
+
 // Task 01c20ad2 clause 3: a workspace-homed handoff's note result names the
 // folder its next session will see it in. Since decision dc0a4387 only a
 // session in a non-git folder under the workspace is workspace-homed.

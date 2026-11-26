@@ -423,6 +423,28 @@ func TestBuildResumeSectionIncludesNext(t *testing.T) {
 	}
 }
 
+// The Resume section is the newest Current Handoff (#3): a Handoff dated
+// later that the fixture's Handoff supersedes is not it.
+func TestBuildResumeSectionSkipsASupersededHandoff(t *testing.T) {
+	st := newTestStore(t)
+	buildExportFixtureStore(t, st)
+	const supersededID = "60000000-0000-4000-8000-000000000006"
+	mustInsertExportFixtureRecord(t, st, supersededID, exportFixtureNow, store.KindHandoff, store.TierAgentDeclared,
+		"superseded handoff", nil, nil)
+	if err := st.LinkEdge(fixtureHandoffID, supersededID, store.EdgeSupersedes, "agent"); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := Build(Params{Store: st, ProjectKey: exportFixtureProject, Altitude: AltitudeSummary, Now: exportFixtureNow})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	resume := got[strings.Index(got, "## Resume"):strings.Index(got, "## Attention")]
+	if !strings.Contains(resume, "(id "+fixtureHandoffID) || strings.Contains(resume, "superseded handoff") {
+		t.Errorf("Resume = %q, want the Current handoff %s", resume, fixtureHandoffID)
+	}
+}
+
 // TestBuildShowsFromDeviceForImportedRecords pins `from <device>` in both
 // places export renders it — the Resume line and a ledger item header — and
 // its absence on local records (critic T2 on task 0abc562f).
@@ -480,7 +502,7 @@ func TestBuildShowsFromDeviceForImportedRecords(t *testing.T) {
 func TestBuildDoneHandoffExportsAsFinished(t *testing.T) {
 	st := newTestStore(t)
 	buildExportFixtureStore(t, st)
-	hs, _, err := st.LatestRecord(exportFixtureProject, store.KindHandoff)
+	hs, err := st.GetRecord(fixtureHandoffID)
 	if err != nil {
 		t.Fatal(err)
 	}

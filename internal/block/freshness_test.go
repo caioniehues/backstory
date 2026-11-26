@@ -13,15 +13,16 @@ import (
 // in common to ever fire.
 func mustInsertHandoffAbout(t *testing.T, s *store.Store, sessionID, text string, about []string) store.Record {
 	t.Helper()
-	if _, err := s.InsertRecord(store.InsertRecordParams{
+	id, err := s.InsertRecord(store.InsertRecordParams{
 		Identity: store.Identity{Kind: store.IdentityAgent}, Kind: store.KindHandoff, Text: text,
 		About: about, SessionID: sessionID, ProjectKey: testProjectKey,
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("InsertRecord handoff: %v", err)
 	}
-	rec, ok, err := s.LatestRecord(testProjectKey, store.KindHandoff)
-	if err != nil || !ok {
-		t.Fatalf("LatestRecord after insert handoff: ok=%v err=%v", ok, err)
+	rec, err := s.GetRecord(id)
+	if err != nil {
+		t.Fatalf("GetRecord: %v", err)
 	}
 	return rec
 }

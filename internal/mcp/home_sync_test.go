@@ -41,7 +41,7 @@ func pullOnce(t *testing.T, client, server *store.Store, from bsync.Cursors) bsy
 // workspace dir, and a migrated workspace-homed one, both arrive on the other
 // store under the repo's sync identity; a workspace-root handoff never does.
 //
-// Mutation probe: restore the any-depth workspace rehoming in handoffHomeKey
+// Mutation probe: restore the any-depth workspace rehoming in project.HandoffHome
 // -> the written handoff is workspace-homed, never served, and this is RED.
 func TestRepoHandoffsUnderWorkspaceSync(t *testing.T) {
 	tmp := t.TempDir()

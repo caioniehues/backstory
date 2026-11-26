@@ -31,6 +31,28 @@ func (s *Store) UpsertRecordEmbedding(recordID, model string, vec []float32) (wr
 	return n > 0, nil
 }
 
+// DropRecordEmbeddings deletes every vector (`backstory embed --drop`) and
+// checkpoints the WAL, as a Tombstone does: the DSN's secure_delete zeroes
+// the freed pages, and the checkpoint folds the WAL's page images in and
+// truncates it, so no copy of a Record's meaning is left on disk. It is the
+// only vector DELETE outside tombstoneRecordTx, and it never takes a WHERE:
+// one Record's vector is forgotten only with the Record. Records are
+// untouched; while embeddings are on, the drain embeds them again.
+func (s *Store) DropRecordEmbeddings() (int, error) {
+	res, err := s.db.Exec(`DELETE FROM record_embeddings`)
+	if err != nil {
+		return 0, fmt.Errorf("store: drop vectors: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("store: drop vectors: %w", err)
+	}
+	if err := s.checkpointTruncate(); err != nil {
+		return 0, err
+	}
+	return int(n), nil
+}
+
 // encodeVector is vec as little-endian float32s.
 func encodeVector(vec []float32) []byte {
 	b := make([]byte, 4*len(vec))

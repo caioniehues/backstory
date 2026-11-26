@@ -168,6 +168,9 @@ func runDaemon(_ []string, stdout, stderr io.Writer) int {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
+	stopDrain := startDrain(ctx, st, logger)
+	defer stopDrain()
+
 	go omausage.Run(ctx, omausage.Config{
 		Store:      st,
 		Interval:   usageIval,

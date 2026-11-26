@@ -717,6 +717,8 @@ backstory embed                        # show: on/off, runtime, model, device
 backstory embed --on --runtime /usr/bin/llama-embedding \
   --model ~/models/embeddinggemma-2/embeddinggemma-2-Q8_0.gguf --device 0000:03:00.0
 backstory embed --off                  # stop; vectors already made are kept
+backstory embed --catch-up             # embed every waiting Record now, with progress
+backstory embed --drop                 # delete every vector
 ```
 
 `--on` runs one test embed first and saves nothing if it fails. It refuses when the binary or
@@ -728,6 +730,30 @@ between boots. On success it prints the device and the fingerprint (model hash, 
 template, backend, dimension) and returns at once. The settings stay on this Device and never
 sync. Record text reaches the runtime only over stdin: it never goes on a command line or into
 a temporary file.
+
+Once embeddings are on, the background service embeds every Decision, Outcome, Handoff and Note
+that has no vector yet, superseded ones, Drafts and Records from paired machines included. It
+starts when the service starts, a couple of seconds after a Record it writes itself, and once a
+minute for Records the command line or Sync wrote. It works in batches of 64 and never makes a
+write wait. Pausing capture doesn't stop it; `--off` does. If the runtime fails it waits and
+retries, from 5 seconds up to 10 minutes between tries, and a Record that keeps failing on its
+own is skipped (counted, until the service restarts). If the chosen device no longer resolves,
+nothing is embedded and `backstory status` says why.
+
+`--catch-up` does the same work in the foreground and prints a progress line per batch, which
+is handy after turning embeddings on for a store that already has many Records. If the
+background service is already embedding, it shows the service's progress instead of starting a
+second run, and returns when nothing is left. Changing the model file, the backend or the
+prompt template puts every Record back in the queue.
+
+`--drop` deletes every stored vector the way a Delete forgets a Record (the freed space is
+zeroed and the write-ahead log is folded in), so no copy of your Records' meaning stays in the
+file. Your Records are not touched. If embeddings are still on, the service embeds them all
+again, so run `--off` first if you want them gone for good.
+
+`backstory status` prints an `embeddings:` line: off, or on with the short fingerprint, how many
+Records are embedded and how many wait, how many were skipped, and the last failure with its
+time, or why the device didn't resolve.
 
 ### restore
 

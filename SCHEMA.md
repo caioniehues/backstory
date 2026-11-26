@@ -303,9 +303,14 @@ ON CONFLICT(record_id) DO UPDATE`, so a vector can't bring back a forgotten Reco
 change re-embeds by upsert, and the Search seam ignores rows whose `model`/`dim` don't match
 the query. The backend is part of the fingerprint because the same file gives slightly different
 vectors on Vulkan and HIP (cos ≥ 0.9998, #19), so a backend switch re-embeds instead of mixing. `tombstoneRecordTx`, the body that Delete, Purge and synced tombstones share,
-deletes the row in the same transaction as the `records_fts` scrub. The opt-in switch is
+deletes the row in the same transaction as the `records_fts` scrub; it is the only place one
+Record's vector is deleted. `backstory embed --drop` deletes every row, then checkpoints the WAL
+(`secure_delete` is on for every connection), as a Tombstone does. The opt-in switch is
 in Device-local, never-synced `settings` keys (`embed.runtime`, `embed.model`,
-`embed.device`, `embed.drain_lease`). `embed.device` holds a stable match (device name or PCI
+`embed.device`, `embed.drain_lease`, `embed.drain_report`). `embed.drain_lease` is `"<pid> <expiry ns>"`:
+one drain per Device, renewed after each batch. `embed.drain_report` is the drain's JSON status for
+`backstory status` (fingerprint, skipped count, last failure, setup error): counts only, never a
+Record id, as skipped Records are tracked in the drain's memory only. `embed.device` holds a stable match (device name or PCI
 address, e.g. `0000:03:00.0`), never a backend index: Vulkan indices change between boots (#19). It
 is resolved to an index at each start, and embedding refuses to run if it doesn't resolve.
 

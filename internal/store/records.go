@@ -214,6 +214,9 @@ func (s *Store) InsertRecordWithEdges(p InsertRecordParams, edges []EdgeSpec) (s
 	if err := tx.Commit(); err != nil {
 		return "", fmt.Errorf("store: commit insert record: %w", err)
 	}
+	if f := s.onRecordWrite.Load(); f != nil {
+		(*f)()
+	}
 	return id, nil
 }
 
@@ -524,7 +527,8 @@ func tombstoneRecordTx(tx *sql.Tx, id string) error {
 		return fmt.Errorf("store: tombstone record %s: scrub fts: %w", id, err)
 	}
 	// The vector is derived from the text, so it goes with it (ADR-0003).
-	// This is the only DELETE on record_embeddings.
+	// This is the only per-Record DELETE on record_embeddings (the other,
+	// DropRecordEmbeddings, removes every row).
 	if _, err := tx.Exec(`DELETE FROM record_embeddings WHERE record_id = ?`, id); err != nil {
 		return fmt.Errorf("store: tombstone record %s: delete vector: %w", id, err)
 	}

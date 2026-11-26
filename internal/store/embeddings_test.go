@@ -1,9 +1,12 @@
 package store
 
 import (
+	"encoding/binary"
 	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -191,10 +194,15 @@ func TestRecordEmbeddingsHasNoTriggers(t *testing.T) {
 	}
 }
 
-// Forgetting a vector happens in one place, tombstoneRecordTx, so every
-// forgetting path (Delete, Purge, synced tombstones) reaches it.
+// Forgetting one Record's vector happens in one place, tombstoneRecordTx, so
+// every forgetting path (Delete, Purge, synced tombstones) reaches it. The
+// only other vector DELETE is `embed --drop`'s, which removes every row: no
+// path deletes a single Record's vector except a Tombstone.
 func TestOnlyTombstoneDeletesVectors(t *testing.T) {
-	var found []string
+	const stmt = "DELETE FROM record_embeddings"
+	funcName := regexp.MustCompile(`^func (?:\([^)]*\) )?(\w+)`)
+	type site struct{ file, fn, rest string }
+	var found []site
 	for _, dir := range []string{"..", filepath.Join("..", "..", "cmd")} {
 		err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
@@ -207,8 +215,23 @@ func TestOnlyTombstoneDeletesVectors(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			if strings.Contains(string(b), "DELETE FROM record_embeddings") {
-				found = append(found, filepath.Base(path))
+			src := string(b)
+			for off := 0; ; {
+				i := strings.Index(src[off:], stmt)
+				if i < 0 {
+					break
+				}
+				i += off
+				off = i + len(stmt)
+				fn := ""
+				if f := strings.LastIndex(src[:i], "\nfunc "); f >= 0 {
+					if m := funcName.FindStringSubmatch(src[f+1:]); m != nil {
+						fn = m[1]
+					}
+				}
+				rest := src[off:]
+				rest = strings.TrimSpace(rest[:strings.IndexAny(rest, "`\"")])
+				found = append(found, site{filepath.Base(path), fn, rest})
 			}
 			return nil
 		})
@@ -216,18 +239,48 @@ func TestOnlyTombstoneDeletesVectors(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if !slices.Equal(found, []string{"records.go"}) {
-		t.Fatalf("DELETE FROM record_embeddings appears in %v, want only records.go (tombstoneRecordTx)", found)
+	want := []site{
+		{"embeddings.go", "DropRecordEmbeddings", ""},
+		{"records.go", "tombstoneRecordTx", "WHERE record_id = ?"},
 	}
-	b, err := os.ReadFile("records.go")
-	if err != nil {
-		t.Fatal(err)
+	if !slices.Equal(found, want) {
+		t.Fatalf("vector DELETEs = %+v\nwant only %+v: one Record's vector is deleted only inside tombstoneRecordTx, and the one other DELETE (embed --drop) removes every row", found, want)
 	}
-	src := string(b)
-	start := strings.Index(src, "func tombstoneRecordTx(")
-	end := strings.Index(src[start+1:], "\nfunc ")
-	if start < 0 || end < 0 || strings.Count(src, "DELETE FROM record_embeddings") != 1 ||
-		!strings.Contains(src[start:start+1+end], "DELETE FROM record_embeddings") {
-		t.Fatal("the vector DELETE must be exactly once in records.go, inside tombstoneRecordTx")
+}
+
+// embed --drop deletes every vector, and the secure_delete pragma plus a
+// WAL checkpoint leave none of their bytes in the DB file or its WAL.
+// Records are untouched.
+func TestDropRecordEmbeddingsLeavesNoVectorOnDisk(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "backstory.db")
+	s := mustOpen(t, path)
+	const marker = "bsvecdropzqx0007"
+	vec := make([]float32, len(marker)/4)
+	for i := range vec {
+		vec[i] = math.Float32frombits(binary.LittleEndian.Uint32([]byte(marker[4*i:])))
+	}
+	a := insertFiller(t, s, "alpha keeps its text")
+	b := insertFiller(t, s, "beta keeps its text")
+	mustUpsertVector(t, s, a, testModel, vec)
+	mustUpsertVector(t, s, b, testModel, vec)
+	if rawMarkerCount(t, path, marker) == 0 {
+		t.Fatal("precondition: the vector bytes should be on disk before --drop")
+	}
+
+	n, err := s.DropRecordEmbeddings()
+	if err != nil || n != 2 {
+		t.Fatalf("DropRecordEmbeddings = %d, %v; want 2", n, err)
+	}
+	var rows int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM record_embeddings`).Scan(&rows); err != nil || rows != 0 {
+		t.Fatalf("rows left = %d, %v; want 0", rows, err)
+	}
+	if c := rawMarkerCount(t, path, marker); c != 0 {
+		t.Fatalf("vector bytes occur %d times in db/-wal after --drop, want 0", c)
+	}
+	for _, id := range []string{a, b} {
+		if r, err := s.GetRecord(id); err != nil || r.TombstonedAt != nil || !strings.Contains(r.Text, "keeps its text") {
+			t.Errorf("record %s after --drop = %+v, %v; want it untouched", id, r, err)
+		}
 	}
 }

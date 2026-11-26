@@ -77,6 +77,7 @@ func runStatus(_ []string, stdout, stderr io.Writer) int {
 	}
 	printSyncLines(stdout, stderr)
 	printBackupLines(stdout)
+	printEmbeddingsLine(stdout)
 	if cwd, err := os.Getwd(); err == nil {
 		if note := outsideProjectRootsNote(cwd, project.DefaultProjectRoots()); note != "" {
 			_, _ = fmt.Fprintln(stdout, note)

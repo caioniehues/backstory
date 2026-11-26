@@ -3,7 +3,6 @@ package graph
 import (
 	"context"
 	"fmt"
-	"slices"
 	"sort"
 	"strings"
 
@@ -52,8 +51,8 @@ type NeighbourEdge struct {
 // the Searcher's Record query, which uses the seed's stored vector and
 // drops every hit below the Searcher's own cosine floor. The walker checks
 // the rest itself, whatever the Searcher returned: inside limits.Scope, and
-// live. A Neighbour is
-// a new node reached from its closest seed, or joins a node already reached
+// a Current Record or an unexpired Draft (canBeNeighbour). A Neighbour is a
+// new node reached from its closest seed, or joins a node already reached
 // another way by its neighbour edge alone, and it is never walked further.
 //
 // The Searcher's reasons (no Embedder, the runtime down, a seed not yet
@@ -63,9 +62,9 @@ func (w *walker) neighbours(ctx context.Context, searcher search.Searcher, seeds
 	if limits.Neighbours <= 0 || searcher == nil || len(seeds) > MaxNeighbourSeeds {
 		return nil
 	}
-	found := map[string]*Reached{}
+	candidates := map[string]*Reached{}
 	joined := map[[2]string]bool{}
-	var next, reasons []string
+	var next []string
 	for _, seed := range seeds {
 		res, err := searcher.Search(ctx, search.Query{
 			RecordID: seed, ProjectKey: limits.Scope.ProjectKey, Scope: limits.Scope.Location,
@@ -74,9 +73,7 @@ func (w *walker) neighbours(ctx context.Context, searcher search.Searcher, seeds
 		if err != nil {
 			return fmt.Errorf("graph: neighbours of %s: %w", seed, err)
 		}
-		if res.Reason != "" && !slices.Contains(reasons, res.Reason) {
-			reasons = append(reasons, res.Reason)
-		}
+		w.reason = search.JoinReasons(w.reason, res.Reason)
 		if res.Reason == search.ReasonEmbeddingsOff || strings.HasPrefix(res.Reason, search.ReasonUnavailablePrefix) {
 			break
 		}
@@ -93,16 +90,15 @@ func (w *walker) neighbours(ctx context.Context, searcher search.Searcher, seeds
 			if _, seen := w.reached[h.RecordID]; seen {
 				continue
 			}
-			if r, ok := found[h.RecordID]; ok && r.Similarity >= h.Similarity {
+			if r, ok := candidates[h.RecordID]; ok && r.Similarity >= h.Similarity {
 				continue
 			} else if !ok {
 				next = append(next, h.RecordID)
 			}
-			found[h.RecordID] = &Reached{Via: ViaNeighbour, From: seed, Similarity: h.Similarity}
+			candidates[h.RecordID] = &Reached{Via: ViaNeighbour, From: seed, Similarity: h.Similarity}
 		}
 	}
-	w.reason = strings.Join(reasons, "; ")
-	_, err := w.admit(next, found)
+	_, err := w.admit(next, candidates)
 	return err
 }
 
@@ -133,21 +129,22 @@ func (w *walker) eligible(seed string, hits []search.Hit, limits Limits) ([]sear
 		if !ok || rec.ID == seed || !limits.Scope.Has(w.st, rec) {
 			continue
 		}
-		live, err := w.live(rec)
+		ok, err := w.canBeNeighbour(rec)
 		if err != nil {
 			return nil, err
 		}
-		if live {
+		if ok {
 			out = append(out, h)
 		}
 	}
 	return out, nil
 }
 
-// live reports whether rec may be a Neighbour (#32: "Current Records and
-// live Drafts only"): not Tombstoned, superseded or an expired Draft
-// (store.ExpiredDraft), and not a confirm Record folded into its target.
-func (w *walker) live(rec store.Record) (bool, error) {
+// canBeNeighbour reports whether rec may be a Neighbour (#32: Current
+// Records and unexpired Drafts only): not Tombstoned, superseded or an
+// expired Draft (store.ExpiredDraft), and not a confirm Record folded into
+// its target.
+func (w *walker) canBeNeighbour(rec store.Record) (bool, error) {
 	edges, err := w.edgesOf(rec.ID)
 	if err != nil {
 		return false, err
@@ -158,6 +155,6 @@ func (w *walker) live(rec store.Record) (bool, error) {
 	if w.st.ExpiredDraft(rec) {
 		return false, nil
 	}
-	fold, err := w.confirms(rec)
+	fold, err := w.isFoldedConfirm(rec)
 	return !fold, err
 }

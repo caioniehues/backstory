@@ -243,16 +243,16 @@ func TestScopeHasRecordsUnderTheCanonicalKey(t *testing.T) {
 	}
 }
 
-// Only Current Records and live Drafts are Neighbours, whatever the
+// Only Current Records and unexpired Drafts are Neighbours, whatever the
 // Searcher returns: never a Tombstoned, superseded or expired one, nor a
 // confirm Record folded into its target.
-func TestWalkNeighboursAreCurrentRecordsAndLiveDrafts(t *testing.T) {
+func TestWalkNeighboursAreCurrentRecordsAndUnexpiredDrafts(t *testing.T) {
 	f := newFixture(t)
 	seed := f.record(store.KindDecision, "the seed")
 	current := f.record(store.KindNote, "current")
 	past, future := time.Now().Add(-time.Hour), time.Now().Add(time.Hour)
-	liveDraft := f.insert(store.InsertRecordParams{
-		Identity: store.Identity{Kind: store.IdentityInference}, Kind: store.KindNote, Text: "a live guess", ExpiresAt: &future,
+	unexpiredDraft := f.insert(store.InsertRecordParams{
+		Identity: store.Identity{Kind: store.IdentityInference}, Kind: store.KindNote, Text: "an unexpired guess", ExpiresAt: &future,
 	})
 	expiredDraft := f.insert(store.InsertRecordParams{
 		Identity: store.Identity{Kind: store.IdentityInference}, Kind: store.KindNote, Text: "an expired guess", ExpiresAt: &past,
@@ -267,20 +267,20 @@ func TestWalkNeighboursAreCurrentRecordsAndLiveDrafts(t *testing.T) {
 
 	fake := &fakeSearcher{neighbours: map[string][]search.Hit{seed: {
 		near(forgotten, 0.95), near(old, 0.9), near(expiredDraft, 0.85), near(affirm, 0.8),
-		near(liveDraft, 0.7), near(current, 0.6),
+		near(unexpiredDraft, 0.7), near(current, 0.6),
 	}}}
 
 	g := f.walkWith(fake, f.neighbourLimits(), seed)
 
-	if want := []string{liveDraft, current, seed}; !sameIDs(nodeIDs(g), want) {
+	if want := []string{unexpiredDraft, current, seed}; !sameIDs(nodeIDs(g), want) {
 		t.Errorf("nodes = %v, want %v: not Tombstoned %s, superseded %s, expired %s or affirm %s",
 			nodeIDs(g), want, forgotten, old, expiredDraft, affirm)
 	}
-	if got := node(t, g, liveDraft).Status; got != StatusDraft {
-		t.Errorf("live Draft's status = %q, want %q", got, StatusDraft)
+	if got := node(t, g, unexpiredDraft).Status; got != StatusDraft {
+		t.Errorf("unexpired Draft's status = %q, want %q", got, StatusDraft)
 	}
 	if len(g.NeighbourEdges) != 2 {
-		t.Errorf("neighbour edges = %+v, want the two to %s and %s", g.NeighbourEdges, liveDraft, current)
+		t.Errorf("neighbour edges = %+v, want the two to %s and %s", g.NeighbourEdges, unexpiredDraft, current)
 	}
 }
 

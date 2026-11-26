@@ -405,7 +405,7 @@ func TestWalkHandoffNodesCarryTheirHandoffStatus(t *testing.T) {
 }
 
 // An expired Draft reached by an edge is left out, and the walk doesn't go
-// through it (#32: "Expired Drafts are left out"). A live Draft and an
+// through it (#32: "Expired Drafts are left out"). An unexpired Draft and an
 // expired Record that isn't a Draft stay, and so does an expired Draft
 // that is itself a seed.
 func TestWalkLeavesOutReachedExpiredDrafts(t *testing.T) {
@@ -417,14 +417,14 @@ func TestWalkLeavesOutReachedExpiredDrafts(t *testing.T) {
 	root := f.record(store.KindDecision, "the seed")
 	expired := draft("an expired guess", past)
 	beyond := f.record(store.KindNote, "reached only through the expired Draft")
-	live := draft("a live guess", future)
+	unexpired := draft("an unexpired guess", future)
 	lapsed := f.insert(store.InsertRecordParams{Identity: store.Identity{Kind: store.IdentityAgent}, Kind: store.KindNote, Text: "expired, but declared", ExpiresAt: &past})
 	f.link(root, expired, store.EdgeInforms)
 	f.link(expired, beyond, store.EdgeInforms)
-	f.link(root, live, store.EdgeInforms)
+	f.link(root, unexpired, store.EdgeInforms)
 	f.link(root, lapsed, store.EdgeInforms)
 
-	if got, want := nodeIDs(f.walk(Limits{Hops: 2}, root)), []string{lapsed, live, root}; !sameIDs(got, want) {
+	if got, want := nodeIDs(f.walk(Limits{Hops: 2}, root)), []string{lapsed, unexpired, root}; !sameIDs(got, want) {
 		t.Errorf("nodes = %v, want %v (no expired Draft %s, nothing through it)", got, want, expired)
 	}
 	if got, want := nodeIDs(f.walk(Limits{Hops: 1}, expired)), []string{beyond, expired, root}; !sameIDs(got, want) {

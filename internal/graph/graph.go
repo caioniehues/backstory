@@ -2,7 +2,7 @@
 // edges, both directions, and returns the Records it reached, each with
 // its status and how it was reached, plus the edges among them. It is the
 // one walker recall and `graph --json` share (#32's resolution, #29's
-// contract), so hops, de-duplication and status live here, not in either
+// contract), so hops, de-duplication and status belong here, not in either
 // caller. It only reads the store.
 package graph
 
@@ -92,8 +92,8 @@ type Node struct {
 	// Handoff is handoff's status for a Handoff that isn't Tombstoned; nil
 	// for any other node.
 	Handoff *handoff.Status
-	// ConfirmedBy is every live Done, Affirm or Promote confirming the
-	// Record, oldest first; never nil.
+	// ConfirmedBy is every Done, Affirm or Promote confirming the Record
+	// that isn't Tombstoned, oldest first; never nil.
 	ConfirmedBy []store.Confirmation
 }
 
@@ -142,7 +142,7 @@ func Walk(ctx context.Context, src Source, seeds []string, limits Limits) (Graph
 			return Graph{}, fmt.Errorf("graph: walk: %w", err)
 		}
 		var next []string
-		found := map[string]*Reached{}
+		candidates := map[string]*Reached{}
 		for _, from := range frontier {
 			edges, err := w.edgesOf(from)
 			if err != nil {
@@ -156,14 +156,14 @@ func Walk(ctx context.Context, src Source, seeds []string, limits Limits) (Graph
 				if _, seen := w.reached[other]; seen || w.folded[other] {
 					continue
 				}
-				if _, seen := found[other]; seen {
+				if _, seen := candidates[other]; seen {
 					continue
 				}
-				found[other] = &Reached{Via: ViaEdge, Type: e.Type, Direction: dir, From: from, Hops: hop}
+				candidates[other] = &Reached{Via: ViaEdge, Type: e.Type, Direction: dir, From: from, Hops: hop}
 				next = append(next, other)
 			}
 		}
-		if frontier, err = w.admit(next, found); err != nil {
+		if frontier, err = w.admit(next, candidates); err != nil {
 			return Graph{}, err
 		}
 	}
@@ -203,7 +203,7 @@ func (w *walker) admit(ids []string, how map[string]*Reached) ([]string, error) 
 			continue
 		}
 		if how[rec.ID] != nil {
-			fold, err := w.confirms(rec)
+			fold, err := w.isFoldedConfirm(rec)
 			if err != nil {
 				return nil, err
 			}
@@ -223,10 +223,10 @@ func (w *walker) admit(ids []string, how map[string]*Reached) ([]string, error) 
 	return admitted, nil
 }
 
-// confirms reports whether rec is a confirm Record that confirms its
-// target, Done, Affirm or Promote: the confirm actions that mint an
+// isFoldedConfirm reports whether rec is a confirm Record folded into its
+// target: a Done, Affirm or Promote, the confirm actions that mint an
 // `informs` edge out of it (store.ConfirmEdgeType).
-func (w *walker) confirms(rec store.Record) (bool, error) {
+func (w *walker) isFoldedConfirm(rec store.Record) (bool, error) {
 	if rec.Kind != store.KindConfirm {
 		return false, nil
 	}
@@ -294,9 +294,6 @@ func (w *walker) graph() (Graph, error) {
 			}
 		}
 		n := Node{Record: rec, Status: status(rec, edges), Reached: w.reached[rec.ID], ConfirmedBy: confirmations[rec.ID]}
-		if n.ConfirmedBy == nil {
-			n.ConfirmedBy = []store.Confirmation{}
-		}
 		if n.Status == StatusTombstoned {
 			n.Record.Text, n.Record.Next = "", ""
 		} else if rec.Kind == store.KindHandoff {
@@ -318,10 +315,8 @@ func status(rec store.Record, edges []store.Edge) Status {
 	if rec.TombstonedAt != nil {
 		return StatusTombstoned
 	}
-	for _, e := range edges {
-		if e.Type == store.EdgeSupersedes && e.ToID == rec.ID {
-			return StatusSuperseded
-		}
+	if _, ok := store.SupersederOf(rec.ID, edges); ok {
+		return StatusSuperseded
 	}
 	if rec.Tier == store.TierInferred {
 		return StatusDraft

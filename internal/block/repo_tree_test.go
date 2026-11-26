@@ -84,3 +84,31 @@ func TestRepoLineUncommittedIsTheReadersOwnTree(t *testing.T) {
 		})
 	}
 }
+
+// A could-not-observe session end carries no evidence either way, so the Repo
+// line skips it and shows the reader's tree's newest OBSERVED session-end
+// state with its age, the rule This Week's uncommitted items follow (#4, the
+// Human's product rule in #34). Before, a later could-not-observe end hid the
+// observed state: the line showed no branch and no count.
+func TestRepoLineSkipsACouldNotObserveSessionEnd(t *testing.T) {
+	s := newTestStore(t)
+	mustUpsertProject(t, s, testProjectKey)
+	earlier := mustStartSession(t, s, "claude", treeWT, 101)
+	h := mustInsertHandoff(t, s, earlier, "handoff")
+	two := 2
+	mustAppendEvent(t, s, earlier, payload.KindSessionGitState, h.TS.Add(time.Minute), payload.SessionGitState{Branch: "feature", UncommittedCount: &two})
+	blind := mustStartSession(t, s, "claude", treeWT, 102)
+	mustAppendEvent(t, s, blind, payload.KindSessionGitState, h.TS.Add(2*time.Minute), payload.SessionGitState{CouldNotObserve: true})
+
+	self := mustStartSession(t, s, "claude", treeWT, 200)
+	out, err := block.Render(block.Params{
+		Store: s, ProcFS: fakeProcFS{}, ProjectKey: testProjectKey, SessionID: self, Harness: "claude",
+		CWD: treeWT, Git: twoTreeGit{}, Now: h.TS.Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	if got, want := lineWith(out, "Repo:"), "Repo: branch feature · 2 uncommitted at last session end (59m ago)"; got != want {
+		t.Errorf("Repo line = %q, want %q; block:\n%s", got, want, out)
+	}
+}

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RidgetopAi/backstory/internal/gitstate"
 	hstatus "github.com/RidgetopAi/backstory/internal/handoff"
 	"github.com/RidgetopAi/backstory/internal/ident"
 	"github.com/RidgetopAi/backstory/internal/payload"
@@ -228,7 +229,7 @@ func Render(p Params) (string, error) {
 		return "", fmt.Errorf("block: shell sessions: %w", err)
 	}
 	testsLine := testsLine(allEvents, p.Now)
-	repoLine, err := repoStateLine(p, readerBranch, handoff, hasHandoff, deltaEvents, shellSessions)
+	repoLine, err := repoStateLine(p, readerBranch, handoff, hasHandoff, deltaEvents)
 	if err != nil {
 		return "", err
 	}
@@ -682,63 +683,33 @@ func formatAge(d time.Duration) string {
 
 // repoStateLine is slot 2's observed repo state, `Repo: branch <b> · <n>
 // uncommitted · <k> commits since the handoff`: the branch and uncommitted
-// count come from the newest non-shell session.git_state since the handoff
-// (the last session end; with could_not_observe there is no count to show),
-// the commits from the handoff's git stamp against the repo as it is now.
-// Each part is shown only when observed; "" when none is.
+// count come from the reader's working tree's newest OBSERVED session end
+// since the handoff (gitstate.LatestIn, the rule This Week's uncommitted
+// items use, #4): a later could-not-observe end carries no evidence and is
+// skipped, so the age says how old the shown state is. The commits come from
+// the handoff's git stamp against the repo as it is now. Each part is shown
+// only when observed; "" when none is.
 //
 // With an absolute CWD only sessions in the READER's own working tree count
-// (project.WorkTree, the rule This Week's uncommitted items use): the project
-// key is the repo's git common dir, shared by the main checkout and every
-// worktree, so another tree's last session end says nothing about this one.
-// Without a CWD (a caller that never sets one) every session counts, as
-// before.
-func repoStateLine(p Params, readerBranch string, handoff store.Record, hasHandoff bool, events []store.TimelineEvent, shellSessions map[string]bool) (string, error) {
+// (project.WorkTree): the project key is the repo's git common dir, shared by
+// the main checkout and every worktree, so another tree's last session end
+// says nothing about this one. Without a CWD (a caller that never sets one)
+// every session counts, as before.
+func repoStateLine(p Params, readerBranch string, handoff store.Record, hasHandoff bool, events []store.TimelineEvent) (string, error) {
 	readerTree := ""
 	if filepath.IsAbs(p.CWD) {
 		readerTree = project.WorkTree(p.Git, filepath.Clean(p.CWD))
 	}
-	// Newest first (events arrive oldest-first): the first session-end state
-	// from the reader's tree is the one shown, so no older session's tree is
-	// ever resolved. Sessions from other trees still are, each once per
-	// folder (Render's per-render CachedGit), so the cost is per distinct
-	// tree, not per session.
-	treeOf := map[string]string{}
-	var gs *payload.SessionGitState
-	var gsTS time.Time
-	for i := len(events) - 1; i >= 0 && gs == nil; i-- {
-		e := events[i]
-		if e.Kind != payload.KindSessionGitState || shellSessions[e.SessionID] {
-			continue
-		}
-		var v payload.SessionGitState
-		if json.Unmarshal([]byte(e.Payload), &v) != nil || v.Phase == payload.GitStatePhaseStart {
-			continue
-		}
-		if readerTree != "" {
-			tree, known := treeOf[e.SessionID]
-			if !known {
-				var err error
-				if tree, err = p.Store.SessionTree(p.Git, e.SessionID); err != nil {
-					return "", fmt.Errorf("block: tree of session %s: %w", e.SessionID, err)
-				}
-				treeOf[e.SessionID] = tree
-			}
-			if tree != readerTree {
-				continue
-			}
-		}
-		gs = &v
-		gsTS = e.TS
+	end, observed, err := gitstate.LatestIn(p.Store, p.Git, events, readerTree)
+	if err != nil {
+		return "", fmt.Errorf("block: repo state: %w", err)
 	}
 	var parts []string
-	if gs != nil && !gs.CouldNotObserve {
-		if gs.Branch != "" {
-			parts = append(parts, "branch "+gs.Branch)
+	if observed {
+		if end.Branch != "" {
+			parts = append(parts, "branch "+end.Branch)
 		}
-		if gs.UncommittedCount != nil {
-			parts = append(parts, fmt.Sprintf("%d uncommitted at last session end (%s)", *gs.UncommittedCount, formatAge(p.Now.Sub(gsTS))))
-		}
+		parts = append(parts, fmt.Sprintf("%d uncommitted at last session end (%s)", end.Uncommitted, formatAge(p.Now.Sub(end.At()))))
 	}
 	if hasHandoff && handoff.GitBranch != "" && readerBranch != "" && handoff.GitBranch != readerBranch {
 		// Another branch's handoff: this branch's commits are not "since" it.

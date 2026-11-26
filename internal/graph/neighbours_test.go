@@ -225,6 +225,34 @@ func TestWalkNeighboursAreCurrentRecordsAndLiveDrafts(t *testing.T) {
 	}
 }
 
+// The walker leaves out exactly the Drafts the store calls expired
+// (store.ExpiredDraft, on the store's clock), whether an edge or a
+// Neighbour link reaches them. A Claim past its expiry isn't a Draft, so
+// it is still a Neighbour.
+func TestWalkJudgesDraftExpiryByTheStoresRule(t *testing.T) {
+	f := newFixture(t)
+	real := time.Now()
+	f.st.SetClock(func() time.Time { return real.Add(2 * time.Hour) })
+	draft := func(text string, expires time.Time) string {
+		return f.insert(store.InsertRecordParams{Identity: store.Identity{Kind: store.IdentityInference}, Kind: store.KindNote, Text: text, ExpiresAt: &expires})
+	}
+	seed := f.record(store.KindDecision, "the seed")
+	linkedLapsed := draft("lapsed by the store's clock, linked", real.Add(time.Hour))
+	f.link(seed, linkedLapsed, store.EdgeInforms)
+	nearLapsed := draft("lapsed by the store's clock, close", real.Add(time.Hour))
+	nearFresh := draft("fresh by the store's clock, close", real.Add(3*time.Hour))
+	claim := f.insert(store.InsertRecordParams{Identity: store.Identity{Kind: store.IdentityAgent}, Kind: store.KindClaim, Text: "a Claim past its expiry", ExpiresAt: &real})
+	fake := &fakeSearcher{neighbours: map[string][]search.Hit{seed: {near(nearLapsed, 0.9), near(claim, 0.8), near(nearFresh, 0.7)}}}
+
+	limits := f.neighbourLimits()
+	limits.Hops = 1
+	g := f.walkWith(fake, limits, seed)
+
+	if want := []string{claim, nearFresh, seed}; !sameIDs(nodeIDs(g), want) {
+		t.Errorf("nodes = %v, want %v: not the Drafts the store calls expired, %s and %s", nodeIDs(g), want, linkedLapsed, nearLapsed)
+	}
+}
+
 // Only seeds have Neighbours: no Record query for an edge-reached node or
 // a Neighbour, and a Neighbour's declared edges aren't followed. A Record
 // already reached by an edge, or a seed, keeps how it was reached and only

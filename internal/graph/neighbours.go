@@ -6,7 +6,6 @@ import (
 	"slices"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/RidgetopAi/backstory/internal/search"
 	"github.com/RidgetopAi/backstory/internal/store"
@@ -140,12 +139,9 @@ func (w *walker) eligible(seed string, hits []search.Hit, limits Limits) ([]sear
 	return out, nil
 }
 
-// now is the clock a Draft's expiry is judged against.
-var now = time.Now
-
 // live reports whether rec may be a Neighbour (#32: "Current Records and
-// live Drafts only"): not Tombstoned, superseded or past its own expiry,
-// and not a confirm Record folded into its target.
+// live Drafts only"): not Tombstoned, superseded or an expired Draft
+// (store.ExpiredDraft), and not a confirm Record folded into its target.
 func (w *walker) live(rec store.Record) (bool, error) {
 	edges, err := w.edgesOf(rec.ID)
 	if err != nil {
@@ -154,7 +150,7 @@ func (w *walker) live(rec store.Record) (bool, error) {
 	if s := status(rec, edges); s != StatusCurrent && s != StatusDraft {
 		return false, nil
 	}
-	if rec.ExpiresAt != nil && !rec.ExpiresAt.After(now()) {
+	if w.st.ExpiredDraft(rec) {
 		return false, nil
 	}
 	fold, err := w.confirms(rec)

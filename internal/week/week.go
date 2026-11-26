@@ -557,10 +557,22 @@ func buildProject(st *store.Store, projectKey string, since, now time.Time, git 
 
 // rowHandoff is a Work location's Handoff for Where you left off and
 // Attention: its Resume handoff (handoff.ResumeFor) read at dir, the
-// location's folder on this Device, never a Peer's cwd. No reader branch is
-// preferred: the row is not a session start on one branch.
+// location's folder on this Device, never a Peer's cwd, preferring the branch
+// checked out there, as a session started at dir would.
+//
+// The branch is read (a git status) only when it can change the pick: the
+// newest Current Handoff was written on a known branch. One with no branch,
+// or on the branch checked out, is also the branch pass's pick.
 func rowHandoff(st *store.Store, projectKey, dir string, git project.Git, workspaces []string) (store.Record, bool, error) {
-	res, err := hstatus.ResumeFor(st, hstatus.Reader{ProjectKey: projectKey, Dir: dir, Git: git, Workspaces: workspaces})
+	r := hstatus.Reader{ProjectKey: projectKey, Dir: dir, Git: git, Workspaces: workspaces}
+	res, err := hstatus.ResumeFor(st, r)
+	if err != nil || !res.Found || res.Handoff.GitBranch == "" {
+		return res.Handoff, res.Found, err
+	}
+	if r.Branch = project.CurrentBranch(git, dir); r.Branch == "" || r.Branch == res.Handoff.GitBranch {
+		return res.Handoff, res.Found, nil
+	}
+	res, err = hstatus.ResumeFor(st, r)
 	return res.Handoff, res.Found, err
 }
 

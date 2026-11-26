@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/RidgetopAi/backstory/internal/block"
+	"github.com/RidgetopAi/backstory/internal/handoff"
 	"github.com/RidgetopAi/backstory/internal/search"
 	"github.com/RidgetopAi/backstory/internal/store"
 )
@@ -649,6 +650,50 @@ func TestBuildTextAnchorNoMatchFallsBackToTheNewestCurrentHandoff(t *testing.T) 
 		}
 		if got := itemIDs(res.Items); len(got) != 1 || got[0] != newest {
 			t.Errorf("%s: items = %v, want [%s]", name, got, newest)
+		}
+	}
+}
+
+// Asked from a Session's folder, the no-match stand-in is the Handoff the
+// SessionStart block there resumes: here the one on the branch checked out,
+// not a newer one on main (#3). With no caller folder it stays the
+// location's newest.
+func TestBuildTextAnchorNoMatchFromASessionIsItsResumeHandoff(t *testing.T) {
+	st := newTestStore(t)
+	mustUpsertProject(t, st, "proj-a")
+	sid := mustStartSession(t, st, "proj-a")
+	handoffOn := func(text, branch string) string {
+		t.Helper()
+		id, err := st.InsertRecord(store.InsertRecordParams{
+			Identity: store.Identity{Kind: store.IdentityAgent}, Kind: store.KindHandoff, Text: text,
+			SessionID: sid, ProjectKey: "proj-a", GitBranch: branch,
+		})
+		if err != nil {
+			t.Fatalf("InsertRecord: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
+		return id
+	}
+	onFeature := handoffOn("feature handoff", "feature")
+	onMain := handoffOn("main handoff", "main")
+
+	reader := handoff.Reader{ProjectKey: "proj-a", Dir: "/home/fixture/proj-a", Branch: "feature"}
+	for name, a := range textAnchors(t, st, "proj-a", "zzqx nonexistent") {
+		for asker, want := range map[string]string{"session": onFeature, "no caller folder": onMain} {
+			asked := a
+			if asker == "session" {
+				asked = a.AskedFrom(reader)
+			}
+			res, err := Build(st, search.New(st), asked, AltitudeFull, testBudget, nil)
+			if err != nil {
+				t.Fatalf("%s, %s: Build: %v", name, asker, err)
+			}
+			if got := itemIDs(res.Items); len(got) != 1 || got[0] != want {
+				t.Errorf("%s, %s: items = %v, want [%s]", name, asker, got, want)
+			}
+			if !strings.HasPrefix(res.Notice, "no match for zzqx nonexistent; latest handoff shown") {
+				t.Errorf("%s, %s: Notice = %q, want the fallback notice", name, asker, res.Notice)
+			}
 		}
 	}
 }

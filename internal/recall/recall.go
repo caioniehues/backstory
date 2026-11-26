@@ -58,11 +58,23 @@ type Anchor struct {
 	// handoff is filed under the workspace key (task ed31b744). Nil keeps
 	// the bare ProjectKey reading.
 	Scope *store.LocationScope
+	// Asker, when set on a text anchor, is the calling Session's folder and
+	// branch: a query that matches nothing falls back to the Resume handoff
+	// the SessionStart block there offers (handoff.ResumeFor). Nil (no
+	// caller folder, as for the CLI) falls back to the location's newest
+	// Current Handoff.
+	Asker *handoff.Reader
 }
 
 // WithScope returns a with its records read through ls.
 func (a Anchor) WithScope(ls store.LocationScope) Anchor {
 	a.Scope = &ls
+	return a
+}
+
+// AskedFrom returns a as asked by the Session reading at r.
+func (a Anchor) AskedFrom(r handoff.Reader) Anchor {
+	a.Asker = &r
 	return a
 }
 
@@ -340,9 +352,9 @@ var handoffKindWords = map[string]bool{"handoff": true, "handoffs": true, "resum
 // resolveTextAnchor takes searcher's hits for the query (a Handoff's next
 // text included), adds every handoff at the location when the query names
 // the handoff kind, and re-orders the match set into sequence order. When
-// nothing matches it falls back to the location's newest Current Handoff
-// (handoff.Newest, the Resume handoff's ordering) and says so in the
-// returned notice, which also carries the searcher's reason.
+// nothing matches it falls back to the asking Session's Resume handoff, else
+// (no Asker) the location's newest Current Handoff (handoff.Newest), and says
+// so in the returned notice, which also carries the searcher's reason.
 func resolveTextAnchor(st *store.Store, searcher search.Searcher, anchor Anchor) ([]store.Record, notices, error) {
 	found, err := searcher.Search(context.Background(), search.Query{
 		Text: anchor.Text, ProjectKey: anchor.ProjectKey, Scope: anchor.Scope, Limit: maxTextResults,
@@ -373,7 +385,7 @@ func resolveTextAnchor(st *store.Store, searcher search.Searcher, anchor Anchor)
 			}
 		}
 		if len(ids) == 0 {
-			latest, ok, err := handoff.Newest(st, all)
+			latest, ok, err := standIn(st, anchor, all)
 			if err != nil {
 				return nil, notices{}, fmt.Errorf("recall: text anchor: %w", err)
 			}
@@ -388,6 +400,16 @@ func resolveTextAnchor(st *store.Store, searcher search.Searcher, anchor Anchor)
 		return nil, notices{}, fmt.Errorf("recall: text anchor: %w", err)
 	}
 	return recs, n, nil
+}
+
+// standIn is a no-match text anchor's Handoff: the asking Session's Resume
+// handoff, else the newest Current one among the location's records.
+func standIn(st *store.Store, anchor Anchor, all []store.Record) (store.Record, bool, error) {
+	if anchor.Asker != nil {
+		res, err := handoff.ResumeFor(st, *anchor.Asker)
+		return res.Handoff, res.Found, err
+	}
+	return handoff.Newest(st, all)
 }
 
 // namesHandoffKind reports whether query has a word naming the handoff kind.

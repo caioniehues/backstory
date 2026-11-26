@@ -175,3 +175,40 @@ func TestBuildWorkspaceExcludedCWDNeverLabelled(t *testing.T) {
 		}
 	}
 }
+
+// Decision 7a2556b6, kept by #3: a non-git folder directly under a Workspace
+// shares the root's key, so its row with no Handoff of its own lists the
+// root's; one with its own Handoff lists that.
+func TestBuildNonGitWorkspaceFolderWithNoHandoffListsTheRoots(t *testing.T) {
+	d := newWSDesk(t)
+	handoff := func(sid, text string) string {
+		t.Helper()
+		id, err := d.st.InsertRecord(store.InsertRecordParams{
+			Identity: store.Identity{Kind: store.IdentityAgent}, Kind: store.KindHandoff, Text: text,
+			SessionID: sid, ProjectKey: "workspace:" + d.ws,
+		})
+		if err != nil {
+			t.Fatalf("InsertRecord: %v", err)
+		}
+		return id
+	}
+	rootH := handoff("root", "root handoff")
+	ownH := handoff("c", "livestream handoff")
+
+	res := d.build(t)
+	for name, want := range map[string]string{"projects/freax": rootH, "projects/personal": rootH, "projects/livestream": ownH} {
+		var found bool
+		for _, row := range res.WhereLeftOff {
+			if row.Project.DisplayName != name {
+				continue
+			}
+			found = true
+			if row.Project.HandoffID != want {
+				t.Errorf("%s row handoff = %q, want %s", name, row.Project.HandoffID, want)
+			}
+		}
+		if !found {
+			t.Errorf("no %s row: %v", name, rowNames(res))
+		}
+	}
+}

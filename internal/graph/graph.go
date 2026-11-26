@@ -114,13 +114,18 @@ type Graph struct {
 // Walk returns the seeds plus every Record within limits.Hops declared
 // edges of one, either direction, any of the six types and across scope.
 // A Record reachable more than one way is reached by its fewest hops.
-// A seed id that names no Record is skipped. An expired Draft (store.ExpiredDraft) reached by
-// an edge is left out, and the walk doesn't go through it.
+// A seed id that names no Record is skipped. An expired Draft
+// (store.ExpiredDraft) reached by an edge is left out, and the walk
+// doesn't go through it.
 //
-// A confirm Record written by Done, Affirm or Promote is never a node, even
-// as a seed, and the walk doesn't go through it: its target carries it in
-// ConfirmedBy instead (#29's amendment). A Contradiction or Supersede
+// A confirm Record written by Done, Affirm or Promote that an edge reaches
+// is not a node, and the walk doesn't go through it: its target carries it
+// in ConfirmedBy instead (#29's amendment). A Contradiction or Supersede
 // confirm stays a node, with its real edge.
+//
+// A seed is always a node, even an expired Draft or a Done, Affirm or
+// Promote confirm, since its caller named it, and the walk goes on from
+// it.
 //
 // With limits.Neighbours set, each seed then adds its Neighbours (see
 // neighbours), which are never walked further.
@@ -185,7 +190,8 @@ type walker struct {
 }
 
 // admit adds ids that name a Record as nodes, with how each was reached,
-// and returns the ones admitted.
+// and returns the ones admitted. A seed (how nil) is always admitted; a
+// reached Record is not when it is a folded confirm or an expired Draft.
 func (w *walker) admit(ids []string, how map[string]*Reached) ([]string, error) {
 	recs, err := w.st.RecordsByIDs(ids)
 	if err != nil {
@@ -196,16 +202,18 @@ func (w *walker) admit(ids []string, how map[string]*Reached) ([]string, error) 
 		if _, seen := w.reached[rec.ID]; seen {
 			continue
 		}
-		fold, err := w.confirms(rec)
-		if err != nil {
-			return nil, err
-		}
-		if fold {
-			w.folded[rec.ID] = true
-			continue
-		}
-		if how[rec.ID] != nil && w.st.ExpiredDraft(rec) {
-			continue
+		if how[rec.ID] != nil {
+			fold, err := w.confirms(rec)
+			if err != nil {
+				return nil, err
+			}
+			if fold {
+				w.folded[rec.ID] = true
+				continue
+			}
+			if w.st.ExpiredDraft(rec) {
+				continue
+			}
 		}
 		w.reached[rec.ID] = how[rec.ID]
 		w.order = append(w.order, rec.ID)

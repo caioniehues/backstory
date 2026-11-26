@@ -268,7 +268,7 @@ func (f *fixture) confirm(p store.ConfirmParams) string {
 	return id
 }
 
-// Done, Affirm and Promote confirm Records are never nodes, seeds included,
+// Done, Affirm and Promote confirm Records an edge reaches are not nodes,
 // and the walk doesn't go through them; their target carries them as
 // confirmed_by, with the type the store wrote. A Contradiction is a confirm
 // Record too, but it stays a node with its real contradicts edge.
@@ -325,8 +325,33 @@ func TestWalkFoldsConfirmRecordsIntoTheirTarget(t *testing.T) {
 		t.Errorf("unconfirmed node's confirmed_by = %#v, want empty, not nil", got)
 	}
 
-	if seeded := f.walk(Limits{Hops: 2}, affirm); len(seeded.Nodes) != 0 {
-		t.Errorf("walk seeded on an affirm = %v, want no nodes", nodeIDs(seeded))
+}
+
+// A seed is kept even when it is a Done, Affirm or Promote confirm Record,
+// since its caller named it, and the walk goes on from it. What it reaches
+// follows the usual rules: its target is a node, and the target's other
+// confirms fold into it.
+func TestWalkKeepsAConfirmSeed(t *testing.T) {
+	f := newFixture(t)
+	h := f.record(store.KindHandoff, "the target")
+	affirm := f.confirm(store.ConfirmParams{Identity: store.Identity{Kind: store.IdentityAgent}, Action: store.ConfirmAffirm, RecordID: h, SessionID: f.session})
+	done := f.confirm(store.ConfirmParams{Identity: store.Identity{Kind: store.IdentityHuman, Actor: "human"}, Action: store.ConfirmDone, RecordID: h})
+	behind := f.record(store.KindNote, "linked to the affirm")
+	f.link(behind, affirm, store.EdgeInforms)
+
+	g := f.walk(Limits{Hops: 2}, affirm)
+
+	if want := []string{behind, affirm, h}; !sameIDs(nodeIDs(g), want) {
+		t.Fatalf("nodes = %v, want %v (not done %s, folded into its target)", nodeIDs(g), want, done)
+	}
+	if r := node(t, g, affirm).Reached; r != nil {
+		t.Errorf("affirm's reached = %+v, want nil: it is the seed", r)
+	}
+	if r := node(t, g, h).Reached; r == nil || r.From != affirm || r.Type != store.EdgeInforms || r.Direction != DirectionOut || r.Hops != 1 {
+		t.Errorf("target's reached = %+v, want out from the affirm along informs, 1 hop", r)
+	}
+	if got := node(t, g, h).ConfirmedBy; len(got) != 2 || got[0].ID != affirm || got[1].ID != done {
+		t.Errorf("target's confirmed_by = %+v, want the affirm then the done", got)
 	}
 }
 

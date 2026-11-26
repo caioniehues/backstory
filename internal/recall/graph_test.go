@@ -93,7 +93,7 @@ func reachedLine(t *testing.T, rendered, id string) string {
 	lines := strings.Split(rendered, "\n")
 	for i, l := range lines {
 		if strings.HasPrefix(l, shortID(id)+" · ") {
-			if i+1 < len(lines) && (strings.HasPrefix(lines[i+1], "← ") || strings.HasPrefix(lines[i+1], "→ ")) {
+			if i+1 < len(lines) && (strings.HasPrefix(lines[i+1], "← ") || strings.HasPrefix(lines[i+1], "→ ") || strings.HasPrefix(lines[i+1], "Neighbour of ")) {
 				return lines[i+1]
 			}
 			return ""

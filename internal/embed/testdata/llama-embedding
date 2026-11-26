@@ -11,6 +11,11 @@
 #   STUB_CPU      set: print no `using device` line (a silent CPU run)
 #   STUB_FAIL     set: log it as an error line and exit 1
 #   STUB_ARGV     file the arguments are written to, one per line
+#   STUB_MAX_INPUT_BYTES  an input longer than this (prefix included) fails
+#                 the run the way one over the context does: the real
+#                 tool's "exceeds batch size" error line, exit 1
+#                 (it stands in for text dense enough to overflow 8192
+#                 tokens in fewer bytes)
 LC_ALL=C
 export LC_ALL
 [ -n "$STUB_ARGV" ] && printf '%s\n' "$@" >"$STUB_ARGV"
@@ -54,8 +59,13 @@ if [ -n "$STUB_FAIL" ]; then
 fi
 [ -n "$file" ] || { echo "error: no prompt file" >&2; exit 1; }
 
-awk -v RS="$sep" -v dim="${STUB_DIM:-768}" '
+awk -v RS="$sep" -v dim="${STUB_DIM:-768}" -v max="${STUB_MAX_INPUT_BYTES:-0}" '
 	BEGIN { printf "{\n  \"object\": \"list\",\n  \"data\": [\n" }
+	max > 0 && length($0) > max {
+		printf "0.00.413.186 E main: number of tokens in input line (%d) exceeds batch size (8192), increase batch size and re-run\n", length($0) > "/dev/stderr"
+		bad = 1
+		exit 1
+	}
 	{
 		r = $0
 		lines = gsub(/\n/, "\n", r) + 1
@@ -65,5 +75,5 @@ awk -v RS="$sep" -v dim="${STUB_DIM:-768}" '
 		printf "]}"
 		n++
 	}
-	END { printf "\n  ]\n}\n" }
+	END { if (bad) exit 1; printf "\n  ]\n}\n" }
 ' "$file"

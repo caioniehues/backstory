@@ -177,6 +177,52 @@ func TestBatchOnTheCPU(t *testing.T) {
 	}
 }
 
+// Text dense enough to overflow the context within the first budget (the
+// stub's STUB_MAX_INPUT_BYTES) is retried, alone, cut to SafeDocumentBytes,
+// so its head is embedded rather than the Record dropped. In a batch of
+// several the run fails as the runtime does (the drain then retries each
+// alone), and a lone document is cut harder only once.
+func TestBatchRetriesALoneOverflowingDocumentCutHarder(t *testing.T) {
+	stubDevices(t, dGPU)
+	prefix := len(embed.DocumentPrefix)
+	t.Setenv("STUB_MAX_INPUT_BYTES", "12000")
+	b := newBatch(t, "AMD Radeon RX 7800 XT")
+	dense := strings.Repeat("7f", 8*1024) // 16 KB that tokenizes densely
+
+	vecs, err := b.Embed(context.Background(), []string{dense})
+	if err != nil {
+		t.Fatalf("a lone overflowing document: %v, want it embedded cut harder", err)
+	}
+	if got, want := vecs[0][0], float32(prefix+embed.SafeDocumentBytes); got != want {
+		t.Errorf("embedded %v bytes, want %v (DocumentPrefix plus SafeDocumentBytes of the head)", got, want)
+	}
+
+	if _, err := b.Embed(context.Background(), []string{dense, "a short Record"}); !errors.Is(err, embed.ErrContextOverflow) {
+		t.Errorf("a batch with an overflowing document: %v, want ErrContextOverflow", err)
+	}
+
+	t.Setenv("STUB_MAX_INPUT_BYTES", "100")
+	if _, err := b.Embed(context.Background(), []string{dense}); !errors.Is(err, embed.ErrContextOverflow) {
+		t.Errorf("a document that overflows even cut harder: %v, want ErrContextOverflow", err)
+	}
+}
+
+// The harder cut can't overflow: every token covers at least one byte, so
+// SafeDocumentBytes of text plus DocumentPrefix and the two special tokens
+// is at most that many tokens, under ContextTokens. The first budget still
+// takes a 16 KB Record (store.MaxRecordTextBytes) whole.
+func TestDocumentBudgetsFitTheContext(t *testing.T) {
+	if worst := embed.SafeDocumentBytes + len(embed.DocumentPrefix) + 2; worst > embed.ContextTokens {
+		t.Errorf("SafeDocumentBytes %d: worst case %d tokens, over the %d-token context", embed.SafeDocumentBytes, worst, embed.ContextTokens)
+	}
+	if embed.MaxDocumentBytes < 16*1024 {
+		t.Errorf("MaxDocumentBytes %d cuts a 16 KB Record", embed.MaxDocumentBytes)
+	}
+	if embed.MaxDocumentBytes > 2*embed.ContextTokens {
+		t.Errorf("MaxDocumentBytes %d: over 2 bytes per token of the %d-token context", embed.MaxDocumentBytes, embed.ContextTokens)
+	}
+}
+
 func TestBatchReportsTheRuntimesError(t *testing.T) {
 	stubDevices(t, dGPU)
 	t.Setenv("STUB_FAIL", "number of tokens in input line (9000) exceeds batch size (8192)")

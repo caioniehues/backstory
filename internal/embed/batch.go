@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -25,10 +26,18 @@ const (
 	// at llama-embedding's default 2048 a long Record fails the whole batch.
 	ContextTokens = 8192
 
-	// MaxDocumentBytes is the byte budget a document is cut to, keeping its
-	// head. At about 3 bytes per token it stays under ContextTokens. It is a
-	// safety net: a MaxRecordTextBytes (16 KB) Record fits whole.
-	MaxDocumentBytes = 24000
+	// MaxDocumentBytes is the byte budget a document is first cut to,
+	// keeping its head: store.MaxRecordTextBytes (16 KB), so a Record's text
+	// fits whole. It stays under ContextTokens at 2 or more bytes per token,
+	// which prose and code take; only denser text (long hex, say) can
+	// overflow it, and that gets SafeDocumentBytes instead.
+	MaxDocumentBytes = 16 * 1024
+
+	// SafeDocumentBytes is the budget a lone document that overflowed the
+	// context is cut to for its one retry. Every token covers at least one
+	// byte, so this much text, DocumentPrefix and the two special tokens
+	// stay under ContextTokens whatever the text.
+	SafeDocumentBytes = ContextTokens - 64
 
 	// separatorDraws is how many random separators a batch tries before
 	// refusing its text.
@@ -37,6 +46,15 @@ const (
 
 // ErrNoGPUOffload is a run whose log shows no GPU device in use.
 var ErrNoGPUOffload = errors.New("embed: the run shows no GPU offload")
+
+// ErrContextOverflow is a run the runtime refused because a document has
+// more tokens than fit in one batch of ContextTokens.
+var ErrContextOverflow = errors.New("embed: a document overflows the context")
+
+// overflowLine is the runtime's error for a document over its batch
+// (llama-embedding: "number of tokens in input line (N) exceeds batch size
+// (8192)").
+var overflowLine = regexp.MustCompile(`number of tokens in input line \(\d+\) exceeds batch size`)
 
 // Batch is the batch embedder: one llama-embedding run per batch, with the
 // documents on stdin. It holds the device resolved when it was made, and
@@ -81,15 +99,28 @@ func NewBatch(ctx context.Context, s Setup) (*Batch, error) {
 func (b *Batch) Device() Device { return b.device }
 
 // Embed returns one Dim-long vector per document, in order. Each document
-// gets DocumentPrefix and is cut to MaxDocumentBytes from its head. The text
-// goes to the runtime only over stdin: never in argv, never in a file.
+// gets DocumentPrefix and is cut to MaxDocumentBytes from its head. A lone
+// document the runtime refuses as over the context (ErrContextOverflow) is
+// run once more cut to SafeDocumentBytes, so its head is embedded rather
+// than the Record dropped; in a batch of several the error is returned, and
+// the drain retries each alone. The text goes to the runtime only over
+// stdin: never in argv, never in a file.
 func (b *Batch) Embed(ctx context.Context, docs []string) ([][]float32, error) {
+	vecs, err := b.run(ctx, docs, MaxDocumentBytes)
+	if len(docs) == 1 && errors.Is(err, ErrContextOverflow) {
+		return b.run(ctx, docs, SafeDocumentBytes)
+	}
+	return vecs, err
+}
+
+// run is one runtime run over docs, each cut to budget bytes.
+func (b *Batch) run(ctx context.Context, docs []string, budget int) ([][]float32, error) {
 	if len(docs) == 0 {
 		return nil, nil
 	}
 	texts := make([]string, len(docs))
 	for i, d := range docs {
-		texts[i] = truncateHead(d, MaxDocumentBytes)
+		texts[i] = truncateHead(d, budget)
 	}
 	sep, err := batchSeparator(texts, b.separator)
 	if err != nil {
@@ -112,6 +143,9 @@ func (b *Batch) Embed(ctx context.Context, docs []string) ([][]float32, error) {
 	cmd.Stdin = strings.NewReader(stdin.String())
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {
+		if ctx.Err() == nil && overflowLine.Match(stderr.Bytes()) {
+			err = errors.Join(ErrContextOverflow, err)
+		}
 		return nil, fmt.Errorf("embed: %s: %w%s", b.setup.Runtime, err, errorLines(stderr.Bytes()))
 	}
 	if err := b.checkDevice(stderr.Bytes()); err != nil {

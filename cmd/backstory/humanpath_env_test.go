@@ -51,7 +51,7 @@ func TestRecallAndTimelineWorkWithAndWithoutRuntimeDirOrHome(t *testing.T) {
 			if err != nil {
 				t.Fatalf("backstory recall: %v", err)
 			}
-			wantRecall := `{"project_key":"env-fixture","altitude":"summary","items":[{"id":"dddd4444-0000-4000-8000-000000000004","kind":"note","tier":"human-declared","status":"current","text":"env fixture note"}]}` + "\n"
+			wantRecall := `{"project_key":"env-fixture","altitude":"summary","items":[{"id":"dddd4444-0000-4000-8000-000000000004","kind":"note","tier":"human-declared","status":"current","ts":"2026-01-01T00:00:00Z","project_key":"env-fixture","text":"env fixture note","reached":null,"handoff":null,"confirmed_by":[]}]}` + "\n"
 			if string(recallOut) != wantRecall {
 				t.Fatalf("backstory recall --json = %q, want %q", recallOut, wantRecall)
 			}

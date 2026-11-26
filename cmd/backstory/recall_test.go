@@ -342,3 +342,78 @@ func TestRecallRecordAnchorByIDPrefix(t *testing.T) {
 		t.Fatalf("record anchor result = %+v, want the unrelated note excluded", parsed.Items)
 	}
 }
+
+// recall --json items carry the shapes they share with graph --json (#45's
+// #30 amendment): reached (null for a direct hit), handoff (null but for a
+// Handoff), confirmed_by (never null), ts and project_key.
+func TestRecallJSONItemsCarryReachedHandoffConfirmedByTSAndProject(t *testing.T) {
+	dataDir := t.TempDir()
+	buildRecallFixtureStore(t, dataDir)
+	const (
+		anchorID  = "cccc3333-0000-4000-8000-000000000003"
+		handoffID = "dddd4444-0000-4000-8000-000000000004"
+	)
+	st, err := store.Open(filepath.Join(dataDir, "backstory", "backstory.db"), nil, nil)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	mustInsertFixtureRecord(t, st, handoffID, time.Date(2026, 1, 1, 0, 3, 0, 0, time.UTC), store.KindHandoff, store.TierAgentDeclared, "Wire the FFI next.")
+	if err := st.LinkEdge(handoffID, anchorID, store.EdgeInforms, "human-cli-fixture"); err != nil {
+		t.Fatalf("LinkEdge informs: %v", err)
+	}
+	if _, err := st.Confirm(store.ConfirmParams{
+		Identity: store.Identity{Kind: store.IdentityHuman, Actor: "human"}, Action: store.ConfirmDone,
+		RecordID: handoffID, ProjectKey: recallFixtureProject,
+	}); err != nil {
+		t.Fatalf("Confirm done: %v", err)
+	}
+	_ = st.Close()
+
+	stdout, stderr, code := runRecallCLI(t, dataDir, "--project", recallFixtureProject, "--json", anchorID)
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0 (stderr: %s)", code, stderr)
+	}
+	var parsed struct {
+		Items []map[string]json.RawMessage `json:"items"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &parsed); err != nil {
+		t.Fatalf("json.Unmarshal(%q): %v", stdout, err)
+	}
+	items := map[string]map[string]json.RawMessage{}
+	for _, it := range parsed.Items {
+		var id string
+		_ = json.Unmarshal(it["id"], &id)
+		items[id] = it
+	}
+	if len(items) != 3 {
+		t.Fatalf("items = %s, want the anchor, the Decision it supersedes and the Handoff (no done confirm)", stdout)
+	}
+	want := map[string]map[string]string{
+		anchorID: {
+			"ts": `"2026-01-01T00:02:00Z"`, "project_key": `"acme-widgets"`,
+			"reached": `null`, "handoff": `null`, "confirmed_by": `[]`,
+		},
+		"aaaa1111-0000-4000-8000-000000000001": {
+			"reached": `{"via":"edge","type":"supersedes","direction":"out","from":"` + anchorID + `","hops":1}`,
+			"handoff": `null`, "confirmed_by": `[]`,
+		},
+		handoffID: {
+			"reached": `{"via":"edge","type":"informs","direction":"in","from":"` + anchorID + `","hops":1}`,
+			"handoff": `{"done":true,"possibly_stale":false,"evidence":[]}`,
+		},
+	}
+	for id, fields := range want {
+		for field, w := range fields {
+			if got := string(items[id][field]); got != w {
+				t.Errorf("item %s %s = %s, want %s", id[:8], field, got, w)
+			}
+		}
+	}
+	var confirmedBy []map[string]string
+	if err := json.Unmarshal(items[handoffID]["confirmed_by"], &confirmedBy); err != nil {
+		t.Fatalf("confirmed_by: %v", err)
+	}
+	if len(confirmedBy) != 1 || confirmedBy[0]["type"] != "done" || confirmedBy[0]["tier"] != "human-declared" || confirmedBy[0]["ts"] == "" {
+		t.Errorf("Handoff's confirmed_by = %+v, want one human-declared done with a ts", confirmedBy)
+	}
+}

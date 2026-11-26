@@ -5,8 +5,11 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/RidgetopAi/backstory/internal/block"
+	"github.com/RidgetopAi/backstory/internal/graph"
+	"github.com/RidgetopAi/backstory/internal/handoff"
 	"github.com/RidgetopAi/backstory/internal/project"
 	"github.com/RidgetopAi/backstory/internal/recall"
 	"github.com/RidgetopAi/backstory/internal/store"
@@ -104,15 +107,79 @@ func recallAnchor(st *store.Store, projectKey string, scope store.LocationScope,
 // enough to identify a record (id, kind), weigh how much to trust it
 // (tier), and know its provenance (status) — the fields the DONE WHEN
 // clause 1 requires, plus the body and status-specific detail recall.Item
-// itself carries.
+// itself carries. reached, handoff, confirmed_by, ts and project_key are
+// the shapes it shares with `graph --json` (#45's #30 amendment): reached
+// and handoff are always present, null when they don't apply, and
+// confirmed_by is never null.
 type recallItemJSON struct {
-	ID                    string  `json:"id"`
-	Kind                  string  `json:"kind"`
-	Tier                  string  `json:"tier"`
-	Status                string  `json:"status"`
-	Text                  string  `json:"text,omitempty"`
-	SupersededByID        string  `json:"superseded_by,omitempty"`
-	ContradictionEvidence []int64 `json:"contradiction_evidence,omitempty"`
+	ID                    string             `json:"id"`
+	Kind                  string             `json:"kind"`
+	Tier                  string             `json:"tier"`
+	Status                string             `json:"status"`
+	TS                    string             `json:"ts"`
+	ProjectKey            string             `json:"project_key"`
+	Text                  string             `json:"text,omitempty"`
+	SupersededByID        string             `json:"superseded_by,omitempty"`
+	ContradictionEvidence []int64            `json:"contradiction_evidence,omitempty"`
+	Reached               *reachedJSON       `json:"reached"`
+	Handoff               *handoffStateJSON  `json:"handoff"`
+	ConfirmedBy           []confirmationJSON `json:"confirmed_by"`
+}
+
+// reachedJSON is how a Record was reached: {via: "edge", type, direction,
+// from, hops} or {via: "neighbour", from, similarity}. direction is
+// relative to from: "out" is from -> this Record.
+type reachedJSON struct {
+	Via        string  `json:"via"`
+	Type       string  `json:"type,omitempty"`
+	Direction  string  `json:"direction,omitempty"`
+	From       string  `json:"from"`
+	Hops       int     `json:"hops,omitempty"`
+	Similarity float64 `json:"similarity,omitempty"`
+}
+
+// newReachedJSON is r's JSON, nil for a direct hit.
+func newReachedJSON(r *graph.Reached) *reachedJSON {
+	if r == nil {
+		return nil
+	}
+	return &reachedJSON{
+		Via: string(r.Via), Type: string(r.Type), Direction: string(r.Direction),
+		From: r.From, Hops: r.Hops, Similarity: r.Similarity,
+	}
+}
+
+// handoffStateJSON is a Handoff's status from internal/handoff; evidence
+// is never null.
+type handoffStateJSON struct {
+	Done          bool     `json:"done"`
+	PossiblyStale bool     `json:"possibly_stale"`
+	Evidence      []string `json:"evidence"`
+}
+
+// newHandoffStateJSON is hs's JSON, nil for anything but a Handoff.
+func newHandoffStateJSON(hs *handoff.Status) *handoffStateJSON {
+	if hs == nil {
+		return nil
+	}
+	return &handoffStateJSON{Done: hs.Done, PossiblyStale: hs.PossiblyStale(), Evidence: hs.Evidence()}
+}
+
+// confirmationJSON is one Done, Affirm or Promote confirming a Record, its
+// type set by the store.
+type confirmationJSON struct {
+	Type string `json:"type"`
+	Tier string `json:"tier"`
+	TS   string `json:"ts"`
+}
+
+// newConfirmationsJSON is cs's JSON, never nil.
+func newConfirmationsJSON(cs []store.Confirmation) []confirmationJSON {
+	out := make([]confirmationJSON, len(cs))
+	for i, c := range cs {
+		out[i] = confirmationJSON{Type: string(c.Type), Tier: string(c.Tier), TS: store.FormatTS(c.TS, time.RFC3339)}
+	}
+	return out
 }
 
 // recallOutputJSON is `backstory recall --json`'s top-level shape:
@@ -137,9 +204,14 @@ func printRecallJSON(stdout io.Writer, projectKey string, altitude recall.Altitu
 			Kind:                  string(item.Kind),
 			Tier:                  string(item.Tier),
 			Status:                string(item.Status),
+			TS:                    store.FormatTS(item.TS, time.RFC3339),
+			ProjectKey:            item.ProjectKey,
 			Text:                  item.Text,
 			SupersededByID:        item.SupersededByID,
 			ContradictionEvidence: item.ContradictionEvidence,
+			Reached:               newReachedJSON(item.Reached),
+			Handoff:               newHandoffStateJSON(item.Handoff),
+			ConfirmedBy:           newConfirmationsJSON(item.ConfirmedBy),
 		})
 	}
 	b, err := json.Marshal(out)

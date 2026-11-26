@@ -1,32 +1,19 @@
 package store
 
 import (
-	"database/sql"
 	"path/filepath"
 	"testing"
 )
 
-// forgetMigration0029 makes a fully migrated store one that has not run
-// migration 0029 yet.
-func forgetMigration0029(t *testing.T, path string) {
-	t.Helper()
-	db, err := sql.Open("sqlite", dsn(path))
-	if err != nil {
-		t.Fatalf("open raw connection: %v", err)
-	}
-	defer func() { _ = db.Close() }()
-	if _, err := db.Exec(`DELETE FROM schema_version WHERE version = 29`); err != nil {
-		t.Fatalf("forget migration 0029: %v", err)
-	}
-}
-
-// Migration 0029 (#5): the pre-#5 re-home moved a Handoff written in a non-git
-// folder deeper under a Workspace onto the folder's own path, as if it were a
-// repo. The migration moves it back to the Workspace's key, where
-// project.HandoffHome files it, after copying the store beside itself
-// (forgetting.Unrehome), and queues it for Peers. A repo's Handoff, a Handoff
-// of a folder outside every Workspace and a non-Handoff stay where they are.
-func TestMigration0029MovesFolderHandoffsBackToTheirWorkspace(t *testing.T) {
+// The repair at every Open (#5): the pre-#5 re-home moved a Handoff written
+// in a non-git folder deeper under a Workspace onto the folder's own path, as
+// if it were a repo. Each Open moves such a Handoff back to the Workspace's
+// key, where project.HandoffHome files it under the Workspaces configured at
+// that Open, after copying the store beside itself (forgetting.Unrehome), and
+// queues it for Peers. A repo's Handoff, a Handoff of a folder outside every
+// Workspace and a non-Handoff stay where they are. A second Open moves
+// nothing and writes no copy.
+func TestUnrehomeAtOpenMovesFolderHandoffsBackToTheirWorkspace(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "backstory.db")
 	wsDir := filepath.Join(dir, "projects")
@@ -60,7 +47,6 @@ func TestMigration0029MovesFolderHandoffsBackToTheirWorkspace(t *testing.T) {
 	if err := s.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	forgetMigration0029(t, path)
 
 	s, err = Open(path, workspaces, fakeSweepGit{})
 	if err != nil {
@@ -96,47 +82,95 @@ func TestMigration0029MovesFolderHandoffsBackToTheirWorkspace(t *testing.T) {
 	if newRows != 1 || newRef != "h-deep" {
 		t.Errorf("new sync_changes rows = %d (ref %q), want exactly one for h-deep", newRows, newRef)
 	}
+	if n := countWhere(t, db, "sync_changes", "ref", "h-deep"); n != 1 {
+		t.Errorf("sync_changes entries for h-deep = %d, want 1", n)
+	}
 	if err := s.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
 
-	// Run again, it finds nothing to repair: no copy, no feed row.
-	forgetMigration0029(t, path)
+	// A second Open finds nothing to repair: no copy, no feed row.
 	s, err = Open(path, workspaces, fakeSweepGit{})
 	if err != nil {
 		t.Fatalf("second reopen: %v", err)
 	}
 	defer func() { _ = s.Close() }()
 	if copies, _ := filepath.Glob(path + ".pre-unrehome-*"); len(copies) != 1 {
-		t.Errorf("a run with nothing to repair wrote a copy: %v", copies)
+		t.Errorf("a second Open wrote another copy: %v", copies)
 	}
 	var maxSeq int
 	if err := s.DB().QueryRow(`SELECT MAX(seq) FROM sync_changes`).Scan(&maxSeq); err != nil {
 		t.Fatalf("max seq: %v", err)
 	}
 	if maxSeq != seqBefore+1 {
-		t.Errorf("a run with nothing to repair queued more changes: max seq %d, want %d", maxSeq, seqBefore+1)
+		t.Errorf("a second Open queued more changes: max seq %d, want %d", maxSeq, seqBefore+1)
 	}
 	if got := projectKeyOf(t, s.DB(), "h-deep"); got != ws {
-		t.Errorf("h-deep project_key = %q after a second run, want %q", got, ws)
+		t.Errorf("h-deep project_key = %q after a second Open, want %q", got, ws)
 	}
 }
 
-// A store with nothing to repair, a fresh one included, gets no copy.
-func TestMigration0029WritesNoCopyWithNothingToRepair(t *testing.T) {
+// The repair files by the Workspaces configured at each Open: with the
+// folder's Workspace not configured, its Handoff is already where
+// HandoffHome files it (its own key), so it stays and no copy is written; the
+// first Open that has the Workspace configured moves it.
+func TestUnrehomeFollowsTheWorkspacesOfEachOpen(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "backstory.db")
-	workspaces := []string{filepath.Join(dir, "projects")}
-	s, err := Open(path, workspaces, fakeSweepGit{})
+	wsDir := filepath.Join(dir, "projects")
+	ws := "workspace:" + wsDir
+	deep := filepath.Join(wsDir, "group", "notes")
+
+	s, err := Open(path, nil, fakeSweepGit{})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	v, err := s.Version()
-	_ = s.Close()
-	if err != nil || v < 29 {
-		t.Errorf("schema version = %d (%v), want migration 0029 applied", v, err)
+	db := s.DB()
+	rawInsertProject(t, db, deep, deep, sweepT1)
+	rawInsertSession(t, db, "s-deep", deep, deep, sweepT1)
+	rawInsertRecord(t, db, "h-deep", deep, "s-deep", KindHandoff, sweepT2)
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	s, err = Open(path, nil, fakeSweepGit{})
+	if err != nil {
+		t.Fatalf("reopen without the workspace: %v", err)
+	}
+	if got := projectKeyOf(t, s.DB(), "h-deep"); got != deep {
+		t.Errorf("no workspace configured: h-deep project_key = %q, want its own %q", got, deep)
 	}
 	if copies, _ := filepath.Glob(path + ".pre-unrehome-*"); len(copies) != 0 {
-		t.Errorf("fresh store: pre-unrehome copies = %v, want none", copies)
+		t.Errorf("nothing to repair, yet copies = %v", copies)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	s, err = Open(path, []string{wsDir}, fakeSweepGit{})
+	if err != nil {
+		t.Fatalf("reopen with the workspace: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+	if got := projectKeyOf(t, s.DB(), "h-deep"); got != ws {
+		t.Errorf("workspace configured: h-deep project_key = %q, want %q", got, ws)
+	}
+}
+
+// A store with nothing to repair, a fresh one included, gets no copy, at its
+// first Open or any later one.
+func TestUnrehomeWritesNoCopyWithNothingToRepair(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "backstory.db")
+	workspaces := []string{filepath.Join(dir, "projects")}
+	for i := 0; i < 2; i++ {
+		s, err := Open(path, workspaces, fakeSweepGit{})
+		if err != nil {
+			t.Fatalf("Open %d: %v", i, err)
+		}
+		_ = s.Close()
+	}
+	if copies, _ := filepath.Glob(path + ".pre-unrehome-*"); len(copies) != 0 {
+		t.Errorf("pre-unrehome copies = %v, want none", copies)
 	}
 }

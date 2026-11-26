@@ -18,7 +18,7 @@ See `RELEASING.md` for the release flow and its approval gates.
 
 ### Fixed
 
-- A handoff written in a non-git folder deeper under a workspace dir (e.g. `~/projects/group/notes`) now keeps the workspace home it was written to (#5). Before, the next `store.Open` moved it onto the folder's own path, as if that folder were a repo, and wrote a `backstory.db.pre-rehome-*` backup each time one was written. Such a handoff now counts on the workspace's row in This Week and `backstory projects`, and a later session anywhere in the workspace can make it Possibly stale, as for one written at the workspace root. Handoffs it already moved go back to the workspace at the next `store.Open` (migration 0029), which first writes a `backstory.db.pre-unrehome-*` backup, once, and only when there is one to move.
+- A handoff written in a non-git folder deeper under a workspace dir (e.g. `~/projects/group/notes`) now keeps the workspace home it was written to (#5). Before, the next `store.Open` moved it onto the folder's own path, as if that folder were a repo, and wrote a `backstory.db.pre-rehome-*` backup each time one was written. Such a handoff now counts on the workspace's row in This Week and `backstory projects`, and a later session anywhere in the workspace can make it Possibly stale, as for one written at the workspace root. Handoffs it already moved go back to the workspace at the next `store.Open`, a check every `Open` runs against the workspace dirs configured then; it first writes a `backstory.db.pre-unrehome-*` backup, only when there is one to move, so an `Open` with nothing to repair writes none.
 
 ## [1.3.6] - 2026-11-25
 

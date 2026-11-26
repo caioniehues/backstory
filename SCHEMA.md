@@ -83,14 +83,15 @@ as `backstory.db.pre-rehome-<UTC time>`; then, in one transaction, `records_no_u
 `project_key` is rewritten, the trigger is recreated from its one definition, and one `sync_changes`
 row (`record`) is queued per moved record so paired machines receive it. Tombstoned handoffs are left
 where they are. A second `Open` finds nothing to move and writes no backup.
-Migration `0029_unrehome_folder_handoffs.sql` (#5) repairs what the re-home did before #5, when it
-moved a Workspace-filed handoff written in a non-git folder deeper under a Workspace (a session keyed
-to its bare folder path) onto that folder's path: every live handoff filed under its writing session's
-own key whose Handoff home (`project.HandoffHome`, with `store.Open`'s configured Workspaces) is a
+After it, every `store.Open` runs the repair of what the re-home did before #5, when it moved a
+Workspace-filed handoff written in a non-git folder deeper under a Workspace (a session keyed to its
+bare folder path) onto that folder's path: every live handoff filed under its writing session's own
+key whose Handoff home (`project.HandoffHome`, with the Workspaces configured at that `Open`) is a
 Workspace moves back to that Workspace's key, the same drop-rewrite-recreate of `records_no_update`
-in the migration's own transaction, with one `sync_changes` row (`record`) queued per moved record.
-When there is one to move, the file is first copied as `backstory.db.pre-unrehome-<UTC time>`; with
-none (a fresh store, or one the old re-home never touched) no copy is written. Every store
+in one transaction, with one `sync_changes` row (`record`) queued per moved record. When there is one
+to move, the file is first copied as `backstory.db.pre-unrehome-<UTC time>`; with none (a fresh store,
+one the old re-home never touched, or one already repaired) no copy is written, so a second `Open`
+moves nothing and writes no copy. Every store
 write taking a project key (`UpsertProject`, `StartSession`, `InsertRecordWithEdges`) and every project-scoped read funnels through the
 same `Store.canonicalizeProjectKey`, so a caller still spelling a workspace folder the old
 way — a stale daemon that has not restarted since an upgrade, a human typing the old path —

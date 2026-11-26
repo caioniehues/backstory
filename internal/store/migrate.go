@@ -134,11 +134,6 @@ func (s *Store) migrate() error {
 		if applied[m.version] {
 			continue
 		}
-		if pre, ok := migrationPreCopies[m.version]; ok {
-			if err := pre(s); err != nil {
-				return fmt.Errorf("store: pre-copy for migration %s: %w", m.name, err)
-			}
-		}
 		if err := s.applyMigration(m); err != nil {
 			return err
 		}
@@ -216,12 +211,6 @@ func (s *Store) applyMigration(m migration) error {
 		if err := hook(ctx, tx); err != nil {
 			_ = tx.Rollback()
 			return fmt.Errorf("store: apply migration %s data hook: %w", m.name, err)
-		}
-	}
-	if hook, ok := migrationStoreHooks[m.version]; ok {
-		if err := hook(s, ctx, tx); err != nil {
-			_ = tx.Rollback()
-			return fmt.Errorf("store: apply migration %s store hook: %w", m.name, err)
 		}
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO schema_version (version, applied_at) VALUES (?, ?)`,

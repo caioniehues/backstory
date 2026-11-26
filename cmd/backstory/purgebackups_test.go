@@ -393,3 +393,66 @@ func TestPurgeDeletesEveryCopyTheStoreKeepsBesideItself(t *testing.T) {
 		}
 	}
 }
+
+// crashedTemp writes a temp file holding purgeMarker into dir under pattern,
+// as a backup or restore killed mid-write leaves one, last modified old ago.
+func crashedTemp(t *testing.T, dir, pattern string, old time.Duration) string {
+	t.Helper()
+	f, err := os.CreateTemp(dir, pattern)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString(purgeMarker); err != nil {
+		t.Fatal(err)
+	}
+	_ = f.Close()
+	at := time.Now().Add(-old)
+	if err := os.Chtimes(f.Name(), at, at); err != nil {
+		t.Fatal(err)
+	}
+	return f.Name()
+}
+
+// The temp files a crashed backup or restore left, holding the text, are
+// listed by the dry run and deleted by the purge once they are older than
+// forgetting.TempMargin; one a backup may still be writing is left alone.
+func TestPurgeDeletesTempFilesACrashLeftPastTheMargin(t *testing.T) {
+	fx := seedPurgeBackups(t)
+	old := []string{
+		crashedTemp(t, fx.backupDir, forgetting.BackupTemp, forgetting.TempMargin+time.Minute),
+		crashedTemp(t, fx.storeDir, forgetting.BackupTemp, 2*forgetting.TempMargin),
+		crashedTemp(t, fx.storeDir, forgetting.RestoreTemp, 2*forgetting.TempMargin),
+	}
+	fresh := crashedTemp(t, fx.backupDir, forgetting.BackupTemp, 0)
+
+	code, out, errs := runAutoCLI(t, "purge", "--session", fx.f.a, "--dry-run")
+	if code != 0 {
+		t.Fatalf("dry-run: exit %d err=%s", code, errs)
+	}
+	if !strings.Contains(out, "would also delete 3 temporary files") {
+		t.Errorf("dry-run does not count the leftovers:\n%s", out)
+	}
+	for _, p := range old {
+		if !strings.Contains(out, p) || !exists(p) {
+			t.Errorf("dry-run does not list %s, or deleted it:\n%s", p, out)
+		}
+	}
+	if strings.Contains(out, fresh) {
+		t.Errorf("dry-run lists %s, which a backup may still be writing", fresh)
+	}
+
+	if code, out, errs = runAutoCLI(t, "purge", "--session", fx.f.a, "--yes"); code != 0 {
+		t.Fatalf("purge: exit %d out=%s err=%s", code, out, errs)
+	}
+	for _, p := range old {
+		if exists(p) {
+			t.Errorf("%s survived the purge holding the text", p)
+		}
+	}
+	if !exists(fresh) {
+		t.Errorf("%s was deleted while a backup may still be writing it", fresh)
+	}
+	if !strings.Contains(out, "deleted 3 temporary files") {
+		t.Errorf("purge does not report the leftovers it deleted:\n%s", out)
+	}
+}

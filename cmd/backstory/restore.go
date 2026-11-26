@@ -282,7 +282,7 @@ func placeFile(src, dst string, hooked bool) error {
 	if err := os.MkdirAll(dir, store.BackupDirMode); err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(dir, ".backstory-restore-*.tmp")
+	tmp, err := os.CreateTemp(dir, forgetting.RestoreTemp) // a crash leaves it for forgetting.Leftovers
 	if err != nil {
 		return err
 	}

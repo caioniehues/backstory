@@ -10,6 +10,7 @@ import (
 	"github.com/RidgetopAi/backstory/internal/ident"
 	"github.com/RidgetopAi/backstory/internal/project"
 	"github.com/RidgetopAi/backstory/internal/recall"
+	"github.com/RidgetopAi/backstory/internal/search"
 	"github.com/RidgetopAi/backstory/internal/store"
 	"github.com/RidgetopAi/backstory/internal/week"
 )
@@ -267,7 +268,7 @@ func resolveRecallScope(st *store.Store, git project.Git, id ident.Identity, ref
 // line declares about identity (id.ProjectKey is the daemon's own
 // observation, the same rule handleBlock follows for the SessionStart
 // block); the `project` parameter only selects which ledger to read.
-func handleRecall(st *store.Store, git project.Git, id ident.Identity, raw json.RawMessage, workspaces []string) DaemonResponse {
+func handleRecall(st *store.Store, searcher search.Searcher, git project.Git, id ident.Identity, raw json.RawMessage, workspaces []string) DaemonResponse {
 	var p RecallParams
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &p); err != nil {
@@ -293,7 +294,7 @@ func handleRecall(st *store.Store, git project.Git, id ident.Identity, raw json.
 		return errResponse("internal", err.Error())
 	}
 
-	built, err := recall.Build(st, anchor, altitude, budgetTokens, workspaces)
+	built, err := recall.Build(st, searcher, anchor, altitude, budgetTokens, workspaces)
 	if err != nil {
 		return errResponse("internal", err.Error())
 	}
@@ -339,6 +340,9 @@ func handleRecall(st *store.Store, git project.Git, id ident.Identity, raw json.
 		msg, err := emptyResultMessage(st, projectKey, displayName, p.Query)
 		if err != nil {
 			return errResponse("internal", err.Error())
+		}
+		if built.Notice != "" {
+			msg += "; " + built.Notice
 		}
 		result.Message = msg
 	}

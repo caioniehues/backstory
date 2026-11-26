@@ -335,7 +335,7 @@ func TestRecallQueryMatchingNothingSaysMatchedNothingNotNoRecordsYet(t *testing.
 	if len(result.Items) != 0 {
 		t.Fatalf("Items = %+v, want empty (query should match nothing)", result.Items)
 	}
-	want := `query "zzz-no-such-term-zzz" matched nothing`
+	want := `query "zzz-no-such-term-zzz" matched nothing; embeddings off`
 	if result.Message != want {
 		t.Errorf("Message = %q, want %q", result.Message, want)
 	}

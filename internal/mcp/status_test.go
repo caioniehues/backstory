@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/RidgetopAi/backstory/internal/ident"
+	"github.com/RidgetopAi/backstory/internal/search"
 	"github.com/RidgetopAi/backstory/internal/store"
 )
 
@@ -35,7 +36,7 @@ func testDaemonCwdErr(t *testing.T, st *store.Store, harness string) string {
 	sessions := NewSessionRegistry()
 	sockPath := filepath.Join(t.TempDir(), "sock")
 	serveTestDaemon(t, sockPath, resolver, func(id ident.Identity, conn net.Conn) {
-		ServeDaemonConn(id, conn, st, procfs, fakeGit{}, nil, sessions, captureNeverOff, nil)
+		ServeDaemonConn(id, conn, st, search.New(st), procfs, fakeGit{}, nil, sessions, captureNeverOff, nil)
 	})
 	return sockPath
 }

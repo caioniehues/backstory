@@ -502,3 +502,26 @@ func TestBuildDoneHandoffExportsAsFinished(t *testing.T) {
 		t.Errorf("done export still stale/next:\n%s", got)
 	}
 }
+
+// Vectors are Device-local derived data: a store whose Records all have one
+// exports exactly what it would without them.
+func TestBuildLeavesVectorsOut(t *testing.T) {
+	st := newTestStore(t)
+	buildExportFixtureStore(t, st)
+	const model = "sha256:feedface|tmpl1|vulkan|3"
+	for _, id := range []string{fixtureHandoffID, fixtureDecisionID, fixtureLongNoteID, fixtureDraftID} {
+		if ok, err := st.UpsertRecordEmbedding(id, model, []float32{0.5, -0.5, 1}); err != nil || !ok {
+			t.Fatalf("UpsertRecordEmbedding(%s) = %v, %v", id, ok, err)
+		}
+	}
+	for altitude, golden := range map[Altitude]string{AltitudeHeadline: "headline.golden", AltitudeSummary: "summary.golden"} {
+		got, err := Build(Params{Store: st, ProjectKey: exportFixtureProject, Altitude: altitude, Now: exportFixtureNow})
+		if err != nil {
+			t.Fatalf("Build: %v", err)
+		}
+		if strings.Contains(got, "feedface") {
+			t.Errorf("%s export names the vector fingerprint", altitude)
+		}
+		compareGolden(t, golden, got)
+	}
+}

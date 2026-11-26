@@ -29,7 +29,7 @@ func pullOnce(t *testing.T, client, server *store.Store, from bsync.Cursors) bsy
 	rep, err := bsync.Run(client, human, from, io.TeeReader(s2cR, &wire), c2sW, bsync.Options{})
 	_ = c2sW.Close()
 	_, _ = io.Copy(io.Discard, s2cR)
-	<-done
+	<-done //nolint:errcheck // waiting for the server goroutine; callers judge the client's result
 	if err != nil {
 		t.Fatalf("sync: %v", err)
 	}

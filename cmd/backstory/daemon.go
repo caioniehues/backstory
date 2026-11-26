@@ -17,9 +17,11 @@ import (
 	"github.com/RidgetopAi/backstory/internal/backfill/codex"
 	"github.com/RidgetopAi/backstory/internal/backfill/hermes"
 	"github.com/RidgetopAi/backstory/internal/backfill/pi"
+	"github.com/RidgetopAi/backstory/internal/embed"
 	"github.com/RidgetopAi/backstory/internal/ident"
 	"github.com/RidgetopAi/backstory/internal/mcp"
 	"github.com/RidgetopAi/backstory/internal/project"
+	"github.com/RidgetopAi/backstory/internal/search"
 	"github.com/RidgetopAi/backstory/internal/socket"
 	"github.com/RidgetopAi/backstory/internal/store"
 	omausage "github.com/RidgetopAi/backstory/internal/usage"
@@ -108,6 +110,10 @@ func runDaemon(_ []string, stdout, stderr io.Writer) int {
 	}
 	defer func() { _ = st.Close() }()
 
+	// Closed after the socket server's handlers are done, before the store.
+	queryServer := startQueryServer(st, sockPath, logger)
+	defer queryServer.Close()
+
 	if n, err := mcp.EndOrphanedSessions(st, project.RealGit{}, logger, captureOff); err != nil {
 		logger.Printf("end sessions left live by a previous run: %v", err)
 	} else if n > 0 {
@@ -133,11 +139,16 @@ func runDaemon(_ []string, stdout, stderr io.Writer) int {
 	}
 
 	sessions := mcp.NewSessionRegistry()
+	searcher := search.New(st, search.WithEmbedder(queryServer))
+	// note's related-Decisions check embeds Record text, so through the
+	// batch runtime: the query server only ever holds query text.
+	recordEmbedder := &embed.RecordEmbedder{Settings: st}
 	srv, err := socket.Listen(sockPath, resolver, func(id ident.Identity, conn net.Conn) {
 		defer func() { _ = conn.Close() }()
 		logIdentity(logger, id)
 		testSlowHandler()
-		mcp.ServeDaemonConn(id, conn, st, procfs, project.RealGit{}, logger, sessions, captureOff, workspaceDirs)
+		mcp.ServeDaemonConn(id, conn, st, searcher, procfs, project.RealGit{}, logger, sessions, captureOff, workspaceDirs,
+			mcp.WithQueryEmbedder(queryServer), mcp.WithRecordEmbedder(recordEmbedder))
 	})
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "backstory daemon:", err)
@@ -161,6 +172,9 @@ func runDaemon(_ []string, stdout, stderr io.Writer) int {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
+	stopDrain := startDrain(ctx, st, logger)
+	defer stopDrain()
+
 	go omausage.Run(ctx, omausage.Config{
 		Store:      st,
 		Interval:   usageIval,
@@ -179,7 +193,7 @@ func runDaemon(_ []string, stdout, stderr io.Writer) int {
 	case <-ctx.Done():
 		logger.Printf("signal received, shutting down")
 		_ = srv.Close()
-		<-serveErr
+		<-serveErr //nolint:errcheck // after Close, Serve returning is the shutdown we asked for
 		return 0
 	case err := <-serveErr:
 		if err != nil {

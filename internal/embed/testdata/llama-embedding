@@ -1,0 +1,79 @@
+#!/bin/sh
+# Stands in for llama.cpp's llama-embedding (b12359) in internal/embed's and
+# cmd/backstory's tests: no GPU, no model. It speaks the real tool's shapes:
+# `--list-devices`, the `using device ARG (DESC) (PCI)` log line on stderr for
+# each -dev device, and --embd-output-format json on stdout, splitting the
+# prompt file by --embd-separator. Each vector is [input bytes, input lines,
+# 0, ...], so a test can tell which input landed where.
+#
+#   STUB_DEVICES  file of ARG|DESC|PCI lines (unset: no devices)
+#   STUB_DIM      vector length (default 768)
+#   STUB_CPU      set: print no `using device` line (a silent CPU run)
+#   STUB_FAIL     set: log it as an error line and exit 1
+#   STUB_ARGV     file the arguments are written to, one per line
+#   STUB_MAX_INPUT_BYTES  an input longer than this (prefix included) fails
+#                 the run the way one over the context does: the real
+#                 tool's "exceeds batch size" error line, exit 1
+#                 (it stands in for text dense enough to overflow 8192
+#                 tokens in fewer bytes)
+LC_ALL=C
+export LC_ALL
+[ -n "$STUB_ARGV" ] && printf '%s\n' "$@" >"$STUB_ARGV"
+
+dev='' sep='
+' file='' list=''
+while [ $# -gt 0 ]; do
+	case "$1" in
+	--list-devices) list=1 ;;
+	-dev | --device) dev=$2; shift ;;
+	--embd-separator) sep=$2; shift ;;
+	-f | --file) file=$2; shift ;;
+	esac
+	shift
+done
+
+if [ -n "$list" ]; then
+	echo "Available devices:"
+	if [ -z "$STUB_DEVICES" ]; then
+		echo "  (none)"
+		exit 0
+	fi
+	while IFS='|' read -r arg desc pci; do
+		echo "  $arg: $desc (16368 MiB, 16184 MiB free)"
+	done <"$STUB_DEVICES"
+	exit 0
+fi
+
+echo "0.00.086.622 I main: n_parallel == 1 -> unified KV cache is enabled" >&2
+if [ -z "$STUB_CPU" ] && [ -n "$dev" ] && [ "$dev" != none ]; then
+	for d in $(echo "$dev" | tr , ' '); do
+		while IFS='|' read -r arg desc pci; do
+			[ "$arg" = "$d" ] && echo "0.00.136.489 I llama_prepare_model_devices: using device $arg ($desc) ($pci) - 16193 MiB free" >&2
+		done <"$STUB_DEVICES"
+	done
+fi
+echo "0.00.278.472 I load_tensors: offloaded 25/25 layers to GPU" >&2
+if [ -n "$STUB_FAIL" ]; then
+	echo "0.00.413.186 E main: $STUB_FAIL" >&2
+	exit 1
+fi
+[ -n "$file" ] || { echo "error: no prompt file" >&2; exit 1; }
+
+awk -v RS="$sep" -v dim="${STUB_DIM:-768}" -v max="${STUB_MAX_INPUT_BYTES:-0}" '
+	BEGIN { printf "{\n  \"object\": \"list\",\n  \"data\": [\n" }
+	max > 0 && length($0) > max {
+		printf "0.00.413.186 E main: number of tokens in input line (%d) exceeds batch size (8192), increase batch size and re-run\n", length($0) > "/dev/stderr"
+		bad = 1
+		exit 1
+	}
+	{
+		r = $0
+		lines = gsub(/\n/, "\n", r) + 1
+		if (n > 0) printf ",\n"
+		printf "    {\"object\": \"embedding\", \"index\": %d, \"embedding\": [%d,%d", n, length($0), lines
+		for (i = 2; i < dim; i++) printf ",0.0000000"
+		printf "]}"
+		n++
+	}
+	END { if (bad) exit 1; printf "\n  ]\n}\n" }
+' "$file"

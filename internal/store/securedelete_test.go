@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -24,6 +26,22 @@ func rawMarkerCount(t *testing.T, dbPath, marker string) int {
 		n += bytes.Count(b, []byte(marker))
 	}
 	return n
+}
+
+// ftsIDs is the ids of every record the FTS index matches for word, with no
+// filter at all: what the index itself still holds.
+func ftsIDs(t *testing.T, s *Store, word string) []string {
+	t.Helper()
+	rows, err := s.db.Query(`SELECT r.id FROM records_fts JOIN records r ON r.rowid = records_fts.rowid
+		WHERE records_fts MATCH ? ORDER BY r.rowid`, `"`+strings.ReplaceAll(word, `"`, `""`)+`"`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids, err := scanIDs(rows)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ids
 }
 
 func insertFiller(t *testing.T, s *Store, text string) string {
@@ -91,12 +109,11 @@ func TestDeleteKeepsOtherRecordsSearchable(t *testing.T) {
 	if err := s.TombstoneRecord(goneID, Identity{Kind: IdentityHuman}); err != nil {
 		t.Fatal(err)
 	}
-	res, err := s.SearchRecords(keep, 10)
-	if err != nil || len(res) != 1 || res[0].ID != keepID {
-		t.Fatalf("keeper search = %v, %v; want only %s", res, err, keepID)
+	if got := ftsIDs(t, s, keep); !slices.Equal(got, []string{keepID}) {
+		t.Fatalf("keeper in the FTS index = %v, want only %s", got, keepID)
 	}
-	if res, _ := s.SearchRecords(gone, 10); len(res) != 0 {
-		t.Fatalf("deleted record still searchable: %v", res)
+	if got := ftsIDs(t, s, gone); len(got) != 0 {
+		t.Fatalf("deleted record still in the FTS index: %v", got)
 	}
 	if rawMarkerCount(t, path, keep) == 0 {
 		t.Error("keeper marker vanished from disk")

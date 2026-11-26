@@ -399,60 +399,6 @@ func (s *Store) latestRepoHandoffUnder(workspaceDir string, from OriginFilter, k
 	return Record{}, false, nil
 }
 
-// SearchRecordsInScope is SearchRecordsInProject over a whole scope: the
-// FTS matches among records filed under ls.RepoKey or written by one of
-// ls's sessions.
-func (s *Store) SearchRecordsInScope(ls LocationScope, query string, limit int) ([]SearchResult, error) {
-	ftsQuery := escapeFTS5Query(query)
-	if ftsQuery == "" {
-		return nil, nil
-	}
-	ids := ls.sortedSessionIDs()
-	seen := map[string]bool{}
-	var out []SearchResult
-	for start := 0; start == 0 || start < len(ids); start += locationQueryChunk {
-		chunk := ids[min(start, len(ids)):min(start+locationQueryChunk, len(ids))]
-		var cond []string
-		args := []any{ftsQuery}
-		if start == 0 && ls.RepoKey != "" {
-			cond = append(cond, "r.project_key = ?")
-			args = append(args, ls.RepoKey)
-		}
-		if len(chunk) > 0 {
-			cond = append(cond, "r.session_id IN ("+strings.TrimSuffix(strings.Repeat("?,", len(chunk)), ",")+")")
-			for _, id := range chunk {
-				args = append(args, id)
-			}
-		}
-		if len(cond) == 0 {
-			continue
-		}
-		args = append(args, limit)
-		//nolint:gosec // cond is assembled from fixed fragments and "?" placeholders; every value is bound
-		query := `SELECT r.id, r.ts, r.kind, r.tier, r.text
-			FROM records_fts
-			JOIN records r ON r.rowid = records_fts.rowid
-			WHERE records_fts MATCH ? AND r.tombstoned_at IS NULL AND (` + strings.Join(cond, " OR ") + `)
-			ORDER BY rank, r.ts ASC
-			LIMIT ?`
-		rows, err := s.db.Query(query, args...)
-		if err != nil {
-			return nil, fmt.Errorf("store: search records in scope: %w", err)
-		}
-		res, err := scanSearchResults(rows)
-		if err != nil {
-			return nil, fmt.Errorf("store: search records in scope: %w", err)
-		}
-		for _, r := range res {
-			if !seen[r.ID] && len(out) < limit {
-				seen[r.ID] = true
-				out = append(out, r)
-			}
-		}
-	}
-	return out, nil
-}
-
 // ResolveProjectRef resolves a caller-supplied project reference — a
 // project key (repo keys are absolute common-dir paths, so a known key wins
 // over reading the same string as a directory) or a directory path — to the

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/RidgetopAi/backstory/internal/ident"
+	"github.com/RidgetopAi/backstory/internal/search"
 	"github.com/RidgetopAi/backstory/internal/socket"
 	"github.com/RidgetopAi/backstory/internal/store"
 )
@@ -128,7 +129,7 @@ func TestCallToolSucceedsAfterDaemonRestart(t *testing.T) {
 	start := func() *socket.Server {
 		srv, err := socket.Listen(sockPath, resolver, func(id ident.Identity, conn net.Conn) {
 			defer func() { _ = conn.Close() }()
-			ServeDaemonConn(id, conn, st, procfs, fakeGit{}, nil, sessions, captureNeverOff, nil)
+			ServeDaemonConn(id, conn, st, search.New(st), procfs, fakeGit{}, nil, sessions, captureNeverOff, nil)
 		})
 		if err != nil {
 			t.Fatalf("socket.Listen: %v", err)

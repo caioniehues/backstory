@@ -1,6 +1,7 @@
 package recall
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -8,6 +9,7 @@ import (
 	"time"
 
 	"github.com/RidgetopAi/backstory/internal/block"
+	"github.com/RidgetopAi/backstory/internal/search"
 	"github.com/RidgetopAi/backstory/internal/store"
 )
 
@@ -123,7 +125,7 @@ func TestBuildProjectAnchorReturnsWholeLedgerNewestFirst(t *testing.T) {
 	third := mustInsertRecord(t, st, sessionA, "proj-a", store.KindHandoff, "third")
 	_ = mustInsertRecord(t, st, sessionB, "proj-b", store.KindNote, "other project, must not appear")
 
-	result, err := Build(st, ProjectAnchor("proj-a"), AltitudeFull, testBudget, nil)
+	result, err := Build(st, search.New(st), ProjectAnchor("proj-a"), AltitudeFull, testBudget, nil)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -159,7 +161,7 @@ func TestBuildRecordAnchorWalksEdgesWithinTwoHops(t *testing.T) {
 	wantIDs := []string{hop2, hop1Out, hop1In, root} // newest-first among the visited set, by insertion sequence
 
 	t.Run("full id", func(t *testing.T) {
-		result, err := Build(st, RecordAnchor(root), AltitudeFull, testBudget, nil)
+		result, err := Build(st, search.New(st), RecordAnchor(root), AltitudeFull, testBudget, nil)
 		if err != nil {
 			t.Fatalf("Build: %v", err)
 		}
@@ -175,7 +177,7 @@ func TestBuildRecordAnchorWalksEdgesWithinTwoHops(t *testing.T) {
 	})
 
 	t.Run("unique short prefix", func(t *testing.T) {
-		result, err := Build(st, RecordAnchor(root[:8]), AltitudeFull, testBudget, nil)
+		result, err := Build(st, search.New(st), RecordAnchor(root[:8]), AltitudeFull, testBudget, nil)
 		if err != nil {
 			t.Fatalf("Build: %v", err)
 		}
@@ -202,7 +204,7 @@ func TestBuildTextAnchorMatchesScopedToProjectInSequenceOrder(t *testing.T) {
 	_ = mustInsertRecord(t, st, sessionA, "proj-a", store.KindNote, "unrelated: gadget latency")
 	_ = mustInsertRecord(t, st, sessionB, "proj-b", store.KindNote, "widget throughput in proj-b, must not appear")
 
-	result, err := Build(st, TextAnchor("proj-a", "widget"), AltitudeFull, testBudget, nil)
+	result, err := Build(st, search.New(st), TextAnchor("proj-a", "widget"), AltitudeFull, testBudget, nil)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -246,7 +248,7 @@ func TestBuildAltitudesFitBudgetOnLargeFixture(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(string(tc.altitude), func(t *testing.T) {
-			result, err := Build(st, ProjectAnchor("proj-a"), tc.altitude, tc.budget, nil)
+			result, err := Build(st, search.New(st), ProjectAnchor("proj-a"), tc.altitude, tc.budget, nil)
 			if err != nil {
 				t.Fatalf("Build: %v", err)
 			}
@@ -278,7 +280,7 @@ func TestBuildMarksSupersededStatusWithSupersedingID(t *testing.T) {
 	newRec := mustInsertRecord(t, st, sessionID, "proj-a", store.KindHandoff, "the new handoff")
 	mustLinkEdge(t, st, newRec, old, store.EdgeSupersedes, sessionID)
 
-	result, err := Build(st, ProjectAnchor("proj-a"), AltitudeFull, testBudget, nil)
+	result, err := Build(st, search.New(st), ProjectAnchor("proj-a"), AltitudeFull, testBudget, nil)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -311,7 +313,7 @@ func TestBuildMarksTombstonedStatusOmitsText(t *testing.T) {
 		t.Fatalf("TombstoneRecord: %v", err)
 	}
 
-	result, err := Build(st, ProjectAnchor("proj-a"), AltitudeFull, testBudget, nil)
+	result, err := Build(st, search.New(st), ProjectAnchor("proj-a"), AltitudeFull, testBudget, nil)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -350,7 +352,7 @@ func TestBuildMarksTombstonedStatusKeepsEdges(t *testing.T) {
 		t.Fatalf("TombstoneRecord: %v", err)
 	}
 
-	result, err := Build(st, ProjectAnchor("proj-a"), AltitudeFull, testBudget, nil)
+	result, err := Build(st, search.New(st), ProjectAnchor("proj-a"), AltitudeFull, testBudget, nil)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -391,7 +393,7 @@ func TestBuildMarksContradictedStatusWithEvidenceIDs(t *testing.T) {
 		"actually the migration failed", evidence)
 	mustLinkEdge(t, st, contradiction, claim, store.EdgeContradicts, sessionID)
 
-	result, err := Build(st, ProjectAnchor("proj-a"), AltitudeFull, testBudget, nil)
+	result, err := Build(st, search.New(st), ProjectAnchor("proj-a"), AltitudeFull, testBudget, nil)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -435,7 +437,7 @@ func TestBuildOrdersBySequenceDespiteDisagreeingTS(t *testing.T) {
 	insertedFirst := mustInsertRecordAtTS(t, st, sessionID, "proj-a", later, "inserted first, but carries a later ts")
 	insertedSecond := mustInsertRecordAtTS(t, st, sessionID, "proj-a", earlier, "inserted second, but carries an earlier ts")
 
-	result, err := Build(st, ProjectAnchor("proj-a"), AltitudeFull, testBudget, nil)
+	result, err := Build(st, search.New(st), ProjectAnchor("proj-a"), AltitudeFull, testBudget, nil)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -489,7 +491,7 @@ func TestBuildHandoffItemCarriesNext(t *testing.T) {
 		t.Fatalf("InsertRecord: %v", err)
 	}
 	for _, alt := range []Altitude{AltitudeHeadline, AltitudeSummary, AltitudeFull} {
-		res, err := Build(st, ProjectAnchor("proj-a"), alt, testBudget, nil)
+		res, err := Build(st, search.New(st), ProjectAnchor("proj-a"), alt, testBudget, nil)
 		if err != nil {
 			t.Fatalf("Build: %v", err)
 		}
@@ -536,15 +538,15 @@ func TestBuildTextAnchorFindsHandoffForNaturalQueries(t *testing.T) {
 
 	for _, q := range []string{"resume next step", "handoff"} {
 		for name, a := range textAnchors(t, st, "proj-a", q) {
-			res, err := Build(st, a, AltitudeFull, testBudget, nil)
+			res, err := Build(st, search.New(st), a, AltitudeFull, testBudget, nil)
 			if err != nil {
 				t.Fatalf("%s %q: Build: %v", name, q, err)
 			}
 			if got := itemIDs(res.Items); len(got) != 1 || got[0] != id {
 				t.Errorf("%s %q: items = %v, want [%s]", name, q, got, id)
 			}
-			if res.Notice != "" {
-				t.Errorf("%s %q: Notice = %q, want none (a real match)", name, q, res.Notice)
+			if res.Notice != search.ReasonEmbeddingsOff {
+				t.Errorf("%s %q: Notice = %q, want only the search's reason (a real match)", name, q, res.Notice)
 			}
 		}
 	}
@@ -555,7 +557,7 @@ func TestBuildTextAnchorMatchesAnyTermRankedNotAll(t *testing.T) {
 	mustUpsertProject(t, st, "proj-a")
 	sid := mustStartSession(t, st, "proj-a")
 	id := mustInsertRecord(t, st, sid, "proj-a", store.KindDecision, "use sqlite for storage")
-	res, err := Build(st, TextAnchor("proj-a", "sqlite postgres"), AltitudeFull, testBudget, nil)
+	res, err := Build(st, search.New(st), TextAnchor("proj-a", "sqlite postgres"), AltitudeFull, testBudget, nil)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -571,15 +573,15 @@ func TestBuildTextAnchorFindsHandoffByNext(t *testing.T) {
 	id := insertHandoff(t, st, sid, "body without the word", "NEXTWORD finish the migration")
 	insertHandoff(t, st, sid, "a newer handoff, different", "something else")
 	for name, a := range textAnchors(t, st, "proj-a", "NEXTWORD") {
-		res, err := Build(st, a, AltitudeFull, testBudget, nil)
+		res, err := Build(st, search.New(st), a, AltitudeFull, testBudget, nil)
 		if err != nil {
 			t.Fatalf("%s: Build: %v", name, err)
 		}
 		if got := itemIDs(res.Items); len(got) < 1 || got[0] != id {
 			t.Errorf("%s: items = %v, want %s first", name, got, id)
 		}
-		if res.Notice != "" {
-			t.Errorf("%s: Notice = %q, want none", name, res.Notice)
+		if res.Notice != search.ReasonEmbeddingsOff {
+			t.Errorf("%s: Notice = %q, want only the search's reason", name, res.Notice)
 		}
 	}
 }
@@ -594,25 +596,25 @@ func TestBuildTextAnchorNoMatchFallsBackToLatestHandoff(t *testing.T) {
 	mustInsertRecord(t, st, sid, "proj-a", store.KindDecision, "unrelated decision")
 
 	for name, a := range textAnchors(t, st, "proj-a", "zzqx nonexistent") {
-		res, err := Build(st, a, AltitudeFull, testBudget, nil)
+		res, err := Build(st, search.New(st), a, AltitudeFull, testBudget, nil)
 		if err != nil {
 			t.Fatalf("%s: Build: %v", name, err)
 		}
 		if got := itemIDs(res.Items); len(got) != 1 || got[0] != latest {
 			t.Errorf("%s: items = %v, want [%s]", name, got, latest)
 		}
-		if want := "no match for zzqx nonexistent; latest handoff shown"; res.Notice != want {
+		if want := "no match for zzqx nonexistent; latest handoff shown; embeddings off"; res.Notice != want {
 			t.Errorf("%s: Notice = %q, want %q", name, res.Notice, want)
 		}
 	}
 
 	for name, a := range textAnchors(t, st, "proj-empty", "zzqx nonexistent") {
-		res, err := Build(st, a, AltitudeFull, testBudget, nil)
+		res, err := Build(st, search.New(st), a, AltitudeFull, testBudget, nil)
 		if err != nil {
 			t.Fatalf("%s empty: Build: %v", name, err)
 		}
-		if len(res.Items) != 0 || res.Notice != "" {
-			t.Errorf("%s empty: items = %v notice = %q, want nothing", name, itemIDs(res.Items), res.Notice)
+		if len(res.Items) != 0 || res.Notice != search.ReasonEmbeddingsOff {
+			t.Errorf("%s empty: items = %v notice = %q, want no items and only the search's reason", name, itemIDs(res.Items), res.Notice)
 		}
 	}
 }
@@ -638,7 +640,7 @@ func TestRenderedShowsFromDeviceForImportedRecordOnly(t *testing.T) {
 	}
 
 	for _, alt := range []Altitude{AltitudeSummary, AltitudeFull} {
-		res, err := Build(st, Anchor{Kind: AnchorProject, ProjectKey: "proj-dev"}, alt, testBudget, nil)
+		res, err := Build(st, search.New(st), Anchor{Kind: AnchorProject, ProjectKey: "proj-dev"}, alt, testBudget, nil)
 		if err != nil {
 			t.Fatalf("Build %s: %v", alt, err)
 		}
@@ -660,5 +662,38 @@ func TestRenderedShowsFromDeviceForImportedRecordOnly(t *testing.T) {
 		if !sawImported || !sawLocal {
 			t.Errorf("%s: headers not found (imported=%v local=%v):\n%s", alt, sawImported, sawLocal, res.Rendered)
 		}
+	}
+}
+
+// fakeSearcher answers every query with fixed hits and a reason.
+type fakeSearcher struct {
+	ids    []string
+	reason string
+}
+
+func (f fakeSearcher) Search(context.Context, search.Query) (search.Result, error) {
+	res := search.Result{Reason: f.reason}
+	for _, id := range f.ids {
+		res.Hits = append(res.Hits, search.Hit{RecordID: id, Via: search.ViaText})
+	}
+	return res, nil
+}
+
+// A text anchor's items are the Searcher's hits, and its notice carries
+// whatever reason the Searcher gave.
+func TestBuildTextAnchorUsesSearcherHitsAndReason(t *testing.T) {
+	st := newTestStore(t)
+	mustUpsertProject(t, st, "proj-a")
+	sid := mustStartSession(t, st, "proj-a")
+	id := mustInsertRecord(t, st, sid, "proj-a", store.KindDecision, "words the query never names")
+	res, err := Build(st, fakeSearcher{ids: []string{id}, reason: "embeddings unavailable: test"}, TextAnchor("proj-a", "zzqx"), AltitudeFull, testBudget, nil)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if got := itemIDs(res.Items); len(got) != 1 || got[0] != id {
+		t.Errorf("items = %v, want [%s]", got, id)
+	}
+	if res.Notice != "embeddings unavailable: test" {
+		t.Errorf("Notice = %q, want the searcher's reason", res.Notice)
 	}
 }

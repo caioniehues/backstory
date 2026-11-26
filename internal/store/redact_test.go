@@ -77,15 +77,9 @@ func TestRedactionOnInsertAndReadback(t *testing.T) {
 				t.Errorf("stored text = %q, want it to contain %q", rec.Text, wantMarker)
 			}
 
-			// Read back over search too: the raw secret must not resurface there either.
-			results, err := s.SearchRecords("redactme OR hunter2 OR abcdefghijklmnopqrstuvwx", 10)
-			if err != nil {
-				t.Fatalf("SearchRecords: %v", err)
-			}
-			for _, r := range results {
-				if strings.Contains(r.Text, tc.wantAbsent) {
-					t.Errorf("SearchRecords returned the raw secret: %q", r.Text)
-				}
+			// The FTS index must not hold the raw secret either.
+			if got := ftsIDs(t, s, tc.wantAbsent); len(got) != 0 {
+				t.Errorf("FTS index matches the raw secret %q: %v", tc.wantAbsent, got)
 			}
 		})
 	}

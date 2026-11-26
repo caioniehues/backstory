@@ -3,6 +3,7 @@ package mcp
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -171,5 +172,40 @@ func TestRelatedDecisionsWritesNoEdge(t *testing.T) {
 	}
 	if got := count(); got != before {
 		t.Errorf("edges %d -> %d; the lookup must not write edges", before, got)
+	}
+}
+
+// About-path matches come first even with no word in common, text matches
+// fill the rest, only Decisions count, and the total is capped.
+func TestRelatedDecisionsAboutFirstThenTextDecisionsOnlyCapped(t *testing.T) {
+	e := newRelatedEnv(t)
+	byAbout1 := e.decision("render the panel with QML", "db/schema.sql")
+	byAbout2 := e.decision("keep the bar widget small", "db/schema.sql")
+	e.note(map[string]any{"kind": "note", "text": "wombat storage engine notes"})
+	e.note(map[string]any{"kind": "handoff", "text": "wombat storage engine handoff"})
+	e.decision("wombat storage engine benchmark")
+	newer := e.decision("wombat storage engine fallback")
+
+	r := e.note(map[string]any{"kind": "decision", "text": "wombat storage engine", "about": []string{"db/schema.sql"}})
+	got := make([]string, len(r.RelatedDecisions))
+	for i, d := range r.RelatedDecisions {
+		got[i] = d.ID
+	}
+	// about matches newest first, then the best text match (equal bm25, so
+	// the newer decision).
+	if want := []string{byAbout2, byAbout1, newer}; !slices.Equal(got, want) {
+		t.Fatalf("related = %v, want %v", got, want)
+	}
+}
+
+// A short Decision is searched by its key words only, so its filler words
+// ("use", "the") never make an unrelated Decision a candidate.
+func TestRelatedDecisionsShortTextUsesKeyWords(t *testing.T) {
+	e := newRelatedEnv(t)
+	sqlite := e.decision("keep SQLite as the store")
+	e.decision("use Postgres for reports")
+	r := e.note(map[string]any{"kind": "decision", "text": "Use SQLite"})
+	if ids := relatedIDs(r); !ids[sqlite] || len(ids) != 1 {
+		t.Fatalf("related_decisions = %+v, want only %s", r.RelatedDecisions, sqlite)
 	}
 }

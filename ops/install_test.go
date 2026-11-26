@@ -32,8 +32,14 @@ type installFixture struct {
 	log    string
 	binOut string
 	run    string   // XDG_RUNTIME_DIR: the daemon socket lives under it
-	extra  []string // per-test env, appended last
+	extra  []string // per-test env, appended last; never PATH (see addPath)
+	onPath []string // extra PATH dirs, after the fakes and before hostTools
 }
+
+// addPath puts dirs on the fixture PATH between the fakes and hostTools. A
+// test must not set PATH through extra: the runner's own PATH carries its
+// omarchy tools, which hostTools exists to keep out.
+func (f *installFixture) addPath(dirs ...string) { f.onPath = append(f.onPath, dirs...) }
 
 func newInstallFixture(t *testing.T) *installFixture {
 	t.Helper()
@@ -191,10 +197,16 @@ func (f *installFixture) make(target string) (string, error) {
 // makeCmd builds (without starting) the `make <target>` command make runs.
 func (f *installFixture) makeCmd(target string) *exec.Cmd {
 	f.t.Helper()
+	for _, e := range f.extra {
+		if strings.HasPrefix(e, "PATH=") {
+			f.t.Fatalf("fixture extra sets %.60s...; use addPath, so hostTools still hides the runner's omarchy tools", e)
+		}
+	}
 	cmd := exec.Command("make", "-C", "..", target, "BIN="+f.binOut) //nolint:gosec // fixture path under t.TempDir
+	path := append(append([]string{f.fakes}, f.onPath...), f.host)
 	cmd.Env = f.env(
 		"BACKSTORY_HEALTH_TIMEOUT="+fixtureHealthTimeout,
-		"PATH="+f.fakes+string(os.PathListSeparator)+f.host,
+		"PATH="+strings.Join(path, string(os.PathListSeparator)),
 		"FAKE_LOG="+f.log,
 		"FAKE_ACTIVE="+filepath.Join(filepath.Dir(f.log), "active"),
 		"FAKE_LOCKED="+filepath.Join(filepath.Dir(f.log), "locked"),
@@ -581,7 +593,7 @@ func TestInstallerRecordsNoProjectForBuildDir(t *testing.T) {
 	// ~/.local/bin is on a real tester's PATH, so the hook command
 	// (`backstory hook session-start`) resolves to the installed binary and
 	// really dials the daemon.
-	f.extra = append(f.extra, "PATH="+f.fakes+string(os.PathListSeparator)+f.path(".local", "bin")+string(os.PathListSeparator)+os.Getenv("PATH"))
+	f.addPath(f.path(".local", "bin"))
 	out := f.mustMake("install")
 	if strings.Contains(out, "hook verification failed") || !strings.Contains(out, "claude") {
 		t.Fatalf("hook verification did not run and pass:\n%s", out)

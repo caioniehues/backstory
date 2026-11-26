@@ -66,8 +66,23 @@ func link(t *testing.T, client *store.Store, clientID store.Identity, server *st
 	rep, err := bsync.Run(client, clientID, from, io.TeeReader(s2cR, &received), c2sW, bsync.Options{})
 	_ = c2sW.Close()
 	_, _ = io.Copy(io.Discard, s2cR)
-	<-done
+	<-done //nolint:errcheck // waiting for the server goroutine; callers judge the client's result
 	return rep, received.Bytes(), err
+}
+
+// textHits is how many Records in the Project of record id a text search
+// for word finds on s.
+func textHits(t *testing.T, s *store.Store, id, word string) int {
+	t.Helper()
+	rec, err := s.GetRecord(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids, err := s.SearchText(word, store.SearchFilter{ProjectKey: rec.ProjectKey, Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return len(ids)
 }
 
 func count(t *testing.T, s *store.Store, q string, args ...any) int {
@@ -163,8 +178,8 @@ func TestTombstonesCrossWithNoText(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if hits, _ := b.SearchRecords("uniqueword", 10); len(hits) != 1 {
-		t.Fatalf("expected the record searchable on B before the tombstone, got %d", len(hits))
+	if n := textHits(t, b, synced, "uniqueword"); n != 1 {
+		t.Fatalf("expected the record searchable on B before the tombstone, got %d", n)
 	}
 	if err := a.TombstoneRecord(synced, human); err != nil {
 		t.Fatal(err)
@@ -181,7 +196,7 @@ func TestTombstonesCrossWithNoText(t *testing.T) {
 	if got.Text != "" || got.TombstonedAt == nil {
 		t.Fatalf("B record not scrubbed: %+v", got)
 	}
-	if hits, _ := b.SearchRecords("uniqueword", 10); len(hits) != 0 {
+	if textHits(t, b, synced, "uniqueword") != 0 {
 		t.Fatal("tombstoned text still searchable on B")
 	}
 	if n := count(t, b, `SELECT COUNT(*) FROM records_fts WHERE records_fts MATCH 'uniqueword'`); n != 0 {

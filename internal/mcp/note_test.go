@@ -14,6 +14,7 @@ import (
 
 	"github.com/RidgetopAi/backstory/internal/ident"
 	"github.com/RidgetopAi/backstory/internal/project"
+	"github.com/RidgetopAi/backstory/internal/search"
 	"github.com/RidgetopAi/backstory/internal/store"
 )
 
@@ -98,7 +99,7 @@ func testDaemonWithWorkspaces(t *testing.T, st *store.Store, harness, cwd, proje
 	sessions := NewSessionRegistry()
 	sockPath := filepath.Join(t.TempDir(), "sock")
 	serveTestDaemon(t, sockPath, resolver, func(id ident.Identity, conn net.Conn) {
-		ServeDaemonConn(id, conn, st, procfs, fakeGit{}, nil, sessions, captureNeverOff, workspaces)
+		ServeDaemonConn(id, conn, st, search.New(st), procfs, fakeGit{}, nil, sessions, captureNeverOff, workspaces)
 	})
 	return sockPath
 }

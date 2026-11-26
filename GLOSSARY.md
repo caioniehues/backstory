@@ -37,6 +37,10 @@ _Avoid_: proof, receipts
 One Record flagging another as wrong, citing Evidence. Only an Agent or the Human files one; Backstory never infers it.
 _Avoid_: conflict, mismatch
 
+**Neighbour**:
+A Record close in meaning to another, found by similarity rather than by an edge. Being a Neighbour asserts nothing about the other Record, unlike Supersede or Contradiction.
+_Avoid_: related record, similar record
+
 **Note**:
 A Record of a fact worth keeping that is neither a Decision nor an Outcome.
 
@@ -47,6 +51,18 @@ _Avoid_: lock, lease
 **Tier**:
 Who a Record's content comes from: `human-declared`, `agent-declared` or `inferred`. Set from observed identity, never chosen by the writer.
 _Avoid_: provenance level, trust level
+
+**Draft**:
+A Record whose Tier is `inferred`: Backstory's own guess, waiting to be Promoted, and allowed to expire.
+_Avoid_: suggestion, candidate, proposal
+
+**Dream**:
+A Backstory run that reads a Project's recent Sessions and Records and writes Drafts for the Human or an Agent to Promote. It never changes what it reads.
+_Avoid_: consolidation, summary run, reflection
+
+**Promote**:
+The Human or an Agent confirming a Draft by writing a new Record at their own Tier that informs it. The Session the Draft was inferred from cannot promote it.
+_Avoid_: approve, accept, upgrade
 
 **Supersede**:
 A newer Record replacing an older one; the older one stays in the Ledger, linked to its replacement.

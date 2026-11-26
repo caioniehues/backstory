@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/RidgetopAi/backstory/internal/payload"
+	"github.com/RidgetopAi/backstory/internal/search"
 	"github.com/RidgetopAi/backstory/internal/store"
 )
 
@@ -89,7 +90,7 @@ func mustAffirm(t *testing.T, st *store.Store, sessionID, targetID string) {
 // returns the Item for handoffID.
 func buildHandoffItem(t *testing.T, st *store.Store, handoffID string) Item {
 	t.Helper()
-	result, err := Build(st, ProjectAnchor(freshnessProjectKey), AltitudeFull, testBudget, nil)
+	result, err := Build(st, search.New(st), ProjectAnchor(freshnessProjectKey), AltitudeFull, testBudget, nil)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}

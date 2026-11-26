@@ -214,6 +214,9 @@ func (s *Store) InsertRecordWithEdges(p InsertRecordParams, edges []EdgeSpec) (s
 	if err := tx.Commit(); err != nil {
 		return "", fmt.Errorf("store: commit insert record: %w", err)
 	}
+	if f := s.onRecordWrite.Load(); f != nil {
+		(*f)()
+	}
 	return id, nil
 }
 
@@ -467,8 +470,9 @@ func (s *Store) ExpiredClaimsWithoutOutcome(projectKey string, asOf time.Time) (
 }
 
 // TombstoneRecord forgets a record: in ONE transaction it removes the old
-// text from the external-content FTS index, then sets tombstoned_at and
-// scrubs records.text to ”. The row and its edges remain. It is the sole
+// text from the external-content FTS index, deletes the Record's vector,
+// then sets tombstoned_at and scrubs records.text to ”. The row and its
+// edges remain. It is the sole
 // human-only power (AGENT-CONTRACT.md §User-only powers) and refuses any
 // identity other than IdentityHuman. Tombstoning an already-tombstoned
 // record is a no-op (the FTS 'delete' command must never be replayed with
@@ -521,6 +525,12 @@ func tombstoneRecordTx(tx *sql.Tx, id string) error {
 	if _, err := tx.Exec(`INSERT INTO records_fts(records_fts, rowid, text) VALUES('delete', ?, ?)`,
 		rowid, text); err != nil {
 		return fmt.Errorf("store: tombstone record %s: scrub fts: %w", id, err)
+	}
+	// The vector is derived from the text, so it goes with it (ADR-0003).
+	// This is the only per-Record DELETE on record_embeddings (the other,
+	// DropRecordEmbeddings, removes every row).
+	if _, err := tx.Exec(`DELETE FROM record_embeddings WHERE record_id = ?`, id); err != nil {
+		return fmt.Errorf("store: tombstone record %s: delete vector: %w", id, err)
 	}
 	if _, err := tx.Exec(`UPDATE records SET tombstoned_at = ?, text = '', next = NULL WHERE id = ?`,
 		tsToNanos(time.Now()), id); err != nil {

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/RidgetopAi/backstory/internal/ident"
+	"github.com/RidgetopAi/backstory/internal/search"
 	"github.com/RidgetopAi/backstory/internal/store"
 )
 
@@ -60,7 +61,7 @@ func testDaemonRealProcFS(t *testing.T, st *store.Store, projectKey string) stri
 
 	sockPath := filepath.Join(t.TempDir(), "sock")
 	serveTestDaemon(t, sockPath, resolver, func(id ident.Identity, conn net.Conn) {
-		ServeDaemonConn(id, conn, st, ident.RealProcFS{}, fakeGit{}, nil, sessions, captureNeverOff, nil)
+		ServeDaemonConn(id, conn, st, search.New(st), ident.RealProcFS{}, fakeGit{}, nil, sessions, captureNeverOff, nil)
 	})
 	return sockPath
 }
@@ -230,7 +231,7 @@ func dialWithIdentity(t *testing.T, st *store.Store, sessions *SessionRegistry, 
 			return
 		}
 		defer func() { _ = conn.Close() }()
-		ServeDaemonConn(id, conn, st, procfs, fakeGit{}, nil, sessions, captureNeverOff, nil)
+		ServeDaemonConn(id, conn, st, search.New(st), procfs, fakeGit{}, nil, sessions, captureNeverOff, nil)
 	}()
 
 	conn, err := net.Dial("unix", sockPath)

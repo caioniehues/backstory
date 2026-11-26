@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/RidgetopAi/backstory/internal/recall"
+	"github.com/RidgetopAi/backstory/internal/search"
 	"github.com/RidgetopAi/backstory/internal/store"
 )
 
@@ -173,7 +174,7 @@ func TestRecordsStatusMatchesRecall(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = st.Close() }()
-	res, err := recall.Build(st, recall.ProjectAnchor(recallFixtureProject), recall.AltitudeHeadline, 1_000_000, nil)
+	res, err := recall.Build(st, search.New(st), recall.ProjectAnchor(recallFixtureProject), recall.AltitudeHeadline, 1_000_000, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

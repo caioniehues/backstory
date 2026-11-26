@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/RidgetopAi/backstory/internal/ident"
+	"github.com/RidgetopAi/backstory/internal/search"
 	"github.com/RidgetopAi/backstory/internal/store"
 )
 
@@ -34,7 +35,7 @@ func serveProbeConn(t *testing.T, st *store.Store) (net.Conn, <-chan struct{}) {
 	go func() {
 		defer close(done)
 		defer func() { _ = server.Close() }()
-		ServeDaemonConn(id, server, st, fakeProcFS{}, fakeGit{}, nil, NewSessionRegistry(), captureNeverOff, nil)
+		ServeDaemonConn(id, server, st, search.New(st), fakeProcFS{}, fakeGit{}, nil, NewSessionRegistry(), captureNeverOff, nil)
 	}()
 	return client, done
 }

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/RidgetopAi/backstory/internal/recall"
+	"github.com/RidgetopAi/backstory/internal/search"
 	"github.com/RidgetopAi/backstory/internal/store"
 )
 
@@ -57,7 +58,12 @@ const summaryBodyChars = 240
 
 // Params is Build's input.
 type Params struct {
-	Store      *store.Store
+	Store *store.Store
+	// Searcher is the caller's Search seam; nil is FTS-only over Store. The
+	// CLI passes the one whose query embeddings come from the daemon (#43).
+	// The mirror reads a project anchor, which never searches, so the
+	// Searcher can't change or break an export.
+	Searcher   search.Searcher
 	ProjectKey string
 	// Scope, when set, reads the mirror's ledger through the location's
 	// full record set (repo-key plus workspace-homed records) instead of the
@@ -99,7 +105,11 @@ func Build(p Params) (string, error) {
 	if p.Scope != nil {
 		anchor = anchor.WithScope(*p.Scope)
 	}
-	result, err := recall.Build(p.Store, anchor, p.Altitude, recallBudgetTokens, p.WorkspaceDirs)
+	searcher := p.Searcher
+	if searcher == nil {
+		searcher = search.New(p.Store)
+	}
+	result, err := recall.Build(p.Store, searcher, anchor, p.Altitude, recallBudgetTokens, p.WorkspaceDirs)
 	if err != nil {
 		return "", fmt.Errorf("export: %w", err)
 	}

@@ -10,11 +10,9 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/RidgetopAi/backstory/internal/forgetting"
 	"github.com/RidgetopAi/backstory/internal/store"
 )
-
-// backupTimeLayout is the UTC stamp in a default backup file name.
-const backupTimeLayout = store.BackupTimeLayout
 
 // defaultBackupDir is <data dir>/backstory/backups, beside the store.
 func defaultBackupDir() (string, error) {
@@ -25,13 +23,14 @@ func defaultBackupDir() (string, error) {
 	return filepath.Join(filepath.Dir(db), "backups"), nil
 }
 
-// defaultBackupDest is backstory-<UTC time>.db in the effective backup folder.
+// defaultBackupDest is a backup's name (backstory-<UTC time>.db) in the
+// effective backup folder.
 func defaultBackupDest(st *store.Store) (string, error) {
 	dir, err := effectiveBackupDir(st)
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dir, "backstory-"+time.Now().UTC().Format(backupTimeLayout)+".db"), nil
+	return filepath.Join(dir, forgetting.BackupName(time.Now())), nil
 }
 
 // writeDefaultBackup is what `backstory backup` does with no --out.

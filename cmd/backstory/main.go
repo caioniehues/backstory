@@ -39,7 +39,7 @@ commands:
   sync-serve serve this store's changes to a paired device over stdin/stdout (sync protocol v1; run by the peer, not by hand)
   export     write a project's markdown mirror for another tool to read
   backup     write a checked snapshot of the store ("backup [--out PATH] [--force] [--json]"; "backup auto [--on|--off] [--dir PATH] [--keep N]" sets the daily automatic backup)
-  embed      turn local embeddings on or off, per Device ("embed --on --runtime PATH --model PATH [--device DEV] [--allow-cpu]" runs one test embed first; "embed --off" keeps the vectors)
+  embed      turn local embeddings on or off, per Device ("embed --on --runtime PATH --model PATH [--device DEV] [--allow-cpu]" runs one test embed first; "embed --off" keeps the vectors; "embed --catch-up" embeds the queue now; "embed --drop" deletes every vector)
   restore    swap a backup in, keeping the current store aside ("restore PATH [--yes]")
   tools      print the agent tools' names and descriptions ("tools --json")
   this-week  print Attention, Where you left off, and The week, read-only

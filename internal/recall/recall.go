@@ -10,6 +10,7 @@ package recall
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -82,7 +83,8 @@ func RecordAnchor(idOrPrefix string) Anchor {
 }
 
 // TextAnchor anchors on a free-text search, scoped to projectKey, plus the
-// Neighbours of its top textAnchorSeeds hits.
+// records the Ledger walk reaches from its top textAnchorSeeds hits: along
+// declared edges, and their Neighbours.
 func TextAnchor(projectKey, query string) Anchor {
 	return Anchor{Kind: AnchorText, ProjectKey: projectKey, Text: query}
 }
@@ -185,14 +187,15 @@ type Item struct {
 
 	// ProjectKey is the Project the record belongs to.
 	ProjectKey string
-	// OtherProject is set on a record anchor's item from a Project other
-	// than the anchor record's: the walk crosses scope, and the item is
-	// labelled with its Project.
+	// OtherProject is set on a walk-reached item from outside the anchor's
+	// Project (the anchor record's, or a text anchor's Project or location
+	// scope): the walk crosses scope, and the item is labelled with its
+	// Project.
 	OtherProject bool
-	// Reached is how a record anchor's walk reached the item (graph.Walk),
-	// or that a text anchor's item is a Neighbour of one of its top hits;
-	// nil for a direct hit: the anchor itself, every text anchor hit, and
-	// every project anchor item.
+	// Reached is how a record or text anchor's walk reached the item
+	// (graph.Walk), by an edge or as a Neighbour; nil for a direct hit: the
+	// anchor record itself, every text anchor hit, and every project anchor
+	// item.
 	Reached *graph.Reached
 	// Handoff is handoff's status for a Handoff that isn't Tombstoned,
 	// whatever its recall Status; nil for any other item.
@@ -316,11 +319,7 @@ func resolve(st *store.Store, searcher search.Searcher, anchor Anchor, workspace
 	case AnchorRecord:
 		return resolveRecordAnchor(st, searcher, anchor.RecordID, workspaces)
 	case AnchorText:
-		recs, seeds, n, err := resolveTextAnchor(st, searcher, anchor)
-		if err != nil {
-			return nil, n, err
-		}
-		return textNeighbours(st, searcher, anchor, direct(recs), seeds, n, workspaces)
+		return resolveTextAnchor(st, searcher, anchor, workspaces)
 	default:
 		return nil, notices{}, fmt.Errorf("recall: unknown anchor kind %q", anchor.Kind)
 	}
@@ -387,35 +386,45 @@ var handoffKindWords = map[string]bool{"handoff": true, "handoffs": true, "resum
 
 // resolveTextAnchor takes searcher's hits for the query (a Handoff's next
 // text included), adds every handoff at the location when the query names
-// the handoff kind, and re-orders the match set into sequence order. It
-// also returns the top textAnchorSeeds hits by search rank. When nothing
-// matches it falls back to the location's latest handoff and says so in
-// the returned notice, which also carries the searcher's reason.
-func resolveTextAnchor(st *store.Store, searcher search.Searcher, anchor Anchor) ([]store.Record, []string, notices, error) {
-	found, err := searcher.Search(context.Background(), search.Query{
-		Text: anchor.Text, ProjectKey: anchor.ProjectKey, Scope: anchor.Scope, Limit: maxTextResults,
+// the handoff kind, then widens: the Ledger walk (graph.Walk,
+// graph.DefaultHops, plus each seed's Neighbours inside the anchor's
+// scope) from the top textAnchorSeeds hits by search rank adds what it
+// reaches, minus Tombstoned Records. Every hit and every added handoff
+// stays a direct hit, even one the walk reaches. A superseded Record is
+// never a direct hit, only reached by an edge (#32). The result is in
+// sequence order. When nothing matches it falls back to the location's
+// latest handoff and says so in the returned notice, which also carries
+// the searcher's reasons, for its search and for the Neighbours, each once.
+func resolveTextAnchor(st *store.Store, searcher search.Searcher, anchor Anchor, workspaces []string) ([]found, notices, error) {
+	res, err := searcher.Search(context.Background(), search.Query{
+		Text: anchor.Text, ProjectKey: anchor.ProjectKey, Scope: anchor.Scope, Limit: maxTextResults, CurrentOnly: true,
 	})
 	if err != nil {
-		return nil, nil, notices{}, fmt.Errorf("recall: text anchor: %w", err)
+		return nil, notices{}, fmt.Errorf("recall: text anchor: %w", err)
 	}
-	ids := make([]string, 0, len(found.Hits))
+	ids := make([]string, 0, len(res.Hits))
 	seen := map[string]bool{}
-	for _, h := range found.Hits {
+	for _, h := range res.Hits {
 		ids = append(ids, h.RecordID)
 		seen[h.RecordID] = true
 	}
 	seeds := ids[:min(len(ids), textAnchorSeeds)]
 
-	n := notices{reason: found.Reason}
+	n := notices{reason: res.Reason}
 	wantHandoffs := namesHandoffKind(anchor.Text)
 	if wantHandoffs || len(ids) == 0 {
 		all, err := projectRecords(st, anchor)
 		if err != nil {
-			return nil, nil, notices{}, err
+			return nil, notices{}, err
 		}
 		var latest string
 		for _, rec := range all {
 			if rec.Kind != store.KindHandoff || rec.TombstonedAt != nil {
+				continue
+			}
+			if sup, err := superseded(st, rec.ID); err != nil {
+				return nil, notices{}, err
+			} else if sup {
 				continue
 			}
 			if latest == "" {
@@ -427,15 +436,65 @@ func resolveTextAnchor(st *store.Store, searcher search.Searcher, anchor Anchor)
 			}
 		}
 		if len(ids) == 0 && latest != "" {
+			seen[latest] = true
 			ids = append(ids, latest)
 			n.fallback = fmt.Sprintf("no match for %s; latest handoff shown", anchor.Text)
 		}
 	}
+
+	g, err := graph.Walk(context.Background(), graph.Source{Store: st, Searcher: searcher, Workspaces: workspaces},
+		seeds, withNeighbours(graph.Limits{Hops: graph.DefaultHops}, anchorScope(st, anchor)))
+	if err != nil {
+		return nil, notices{}, fmt.Errorf("recall: text anchor: %w", err)
+	}
+	n.reason = joinReasons(n.reason, g.Reason)
+	widened := map[string]graph.Node{}
+	for _, node := range g.Nodes {
+		if seen[node.Record.ID] || node.Status == graph.StatusTombstoned {
+			continue
+		}
+		widened[node.Record.ID] = node
+		ids = append(ids, node.Record.ID)
+	}
+
 	recs, err := st.RecordsByIDs(ids)
 	if err != nil {
-		return nil, nil, notices{}, fmt.Errorf("recall: text anchor: %w", err)
+		return nil, notices{}, fmt.Errorf("recall: text anchor: %w", err)
 	}
-	return recs, seeds, n, nil
+	out := make([]found, len(recs))
+	for i, rec := range recs {
+		out[i] = found{rec: rec}
+		if node, ok := widened[rec.ID]; ok {
+			out[i].reached, out[i].handoff = node.Reached, node.Handoff
+			out[i].otherProject = !inScope(st, anchor, rec)
+		}
+	}
+	return out, n, nil
+}
+
+// superseded reports whether a supersedes edge points into the record id.
+func superseded(st *store.Store, id string) (bool, error) {
+	edges, err := st.EdgesTouching(id)
+	if err != nil {
+		return false, fmt.Errorf("recall: text anchor: %w", err)
+	}
+	for _, e := range edges {
+		if e.Type == store.EdgeSupersedes && e.ToID == id {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// inScope reports whether rec belongs to what a project or text anchor
+// reads: its location scope when it has one (the store's own rule: the
+// scope's repo key, or one of its Sessions), else its Project.
+func inScope(st *store.Store, anchor Anchor, rec store.Record) bool {
+	key := st.CanonicalProjectKey(rec.ProjectKey)
+	if ls := anchor.Scope; ls != nil {
+		return (ls.RepoKey != "" && key == ls.RepoKey) || ls.SessionIDs[rec.SessionID]
+	}
+	return key == st.CanonicalProjectKey(anchor.ProjectKey)
 }
 
 // namesHandoffKind reports whether query has a word naming the handoff kind.
@@ -546,30 +605,82 @@ func annotateWith(st *store.Store, rec store.Record, workspaces []string, hs *ha
 	return item, nil
 }
 
-// fit renders items at altitude, keeping only as many — in their given
-// order — as fit budgetTokens (block.EstimateTokens, the same estimator
-// the SessionStart block budgets against): it accumulates the actual
-// joined rendering incrementally and stops before a next item would push
-// the estimate over budget, so Result.Rendered's own estimate is always
-// <= budgetTokens and Result.Items is exactly the set that rendering
+// fit renders items at altitude, keeping only as many as fit budgetTokens
+// (block.EstimateTokens, the same estimator the SessionStart block budgets
+// against). Survivors are picked by priority (outranks: direct hits, then
+// edge-reached items by fewest hops, each tier in the given order) and
+// rendered in the given order, which is sequence order (#32). It adds them
+// one at a time, re-rendering the kept set, and stops before the first
+// that would push the estimate over budget, so a lower-priority item never
+// pushes out a higher one, Result.Rendered's own estimate is always <=
+// budgetTokens, and Result.Items is exactly the set that rendering
 // reflects.
 func fit(items []Item, altitude Altitude, budgetTokens int) Result {
+	order := make([]int, len(items))
+	for i := range order {
+		order[i] = i
+	}
+	sort.SliceStable(order, func(a, b int) bool { return outranks(items[order[a]].Reached, items[order[b]].Reached) })
+
 	sep := altitudeSeparator(altitude)
-	var kept []Item
-	rendered := ""
-	for _, item := range items {
-		line := renderItem(item, altitude)
-		candidate := line
-		if rendered != "" {
-			candidate = rendered + sep + line
+	lines := make([]string, len(items))
+	kept := make([]bool, len(items))
+	rendered, last := "", -1
+	for _, i := range order {
+		lines[i] = renderItem(items[i], altitude)
+		var candidate string
+		switch {
+		case last < 0:
+			candidate = lines[i]
+		case i > last:
+			// Every kept item comes before this one: append, as a project
+			// anchor (all direct hits) always does.
+			candidate = rendered + sep + lines[i]
+		default:
+			kept[i] = true
+			candidate = joinKept(lines, kept, sep)
+			kept[i] = false
 		}
 		if block.EstimateTokens(candidate) > budgetTokens {
 			break
 		}
-		rendered = candidate
-		kept = append(kept, item)
+		rendered, kept[i], last = candidate, true, max(last, i)
 	}
-	return Result{Items: kept, Rendered: rendered}
+	res := Result{Rendered: rendered}
+	for i, item := range items {
+		if kept[i] {
+			res.Items = append(res.Items, item)
+		}
+	}
+	return res
+}
+
+// outranks reports whether an item reached by a goes into the budget
+// before one reached by b: a direct hit (nil) first, then an edge-reached
+// item, fewer hops first. Anything else comes after those.
+func outranks(a, b *graph.Reached) bool {
+	if (a == nil) != (b == nil) {
+		return a == nil
+	}
+	if a == nil {
+		return false
+	}
+	aEdge, bEdge := a.Via == graph.ViaEdge, b.Via == graph.ViaEdge
+	if aEdge && bEdge {
+		return a.Hops < b.Hops
+	}
+	return aEdge && !bEdge
+}
+
+// joinKept joins the kept lines, in order, with sep.
+func joinKept(lines []string, kept []bool, sep string) string {
+	var parts []string
+	for i, line := range lines {
+		if kept[i] {
+			parts = append(parts, line)
+		}
+	}
+	return strings.Join(parts, sep)
 }
 
 func altitudeSeparator(altitude Altitude) string {

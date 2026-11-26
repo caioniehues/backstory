@@ -18,6 +18,7 @@ import (
 	"github.com/RidgetopAi/backstory/internal/payload"
 	"github.com/RidgetopAi/backstory/internal/project"
 	"github.com/RidgetopAi/backstory/internal/store"
+	"github.com/RidgetopAi/backstory/internal/tooluse"
 )
 
 const (
@@ -513,7 +514,11 @@ func appendToolEvents(st *store.Store, sessionID, agentID string, lines []transc
 						continue
 					}
 				}
-				payloadBytes, err := json.Marshal(toolUsePayload(b.ID, b.Name, b.Input, agentID))
+				// The same normaliser the live hook uses; agentID is the one
+				// field only a transcript knows (a subagent's own file).
+				tu := tooluse.Claude(b.ID, b.Name, b.Input)
+				tu.AgentID = agentID
+				payloadBytes, err := json.Marshal(tu)
 				if err != nil {
 					return n, err
 				}

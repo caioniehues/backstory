@@ -3,6 +3,7 @@ package recall
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/RidgetopAi/backstory/internal/graph"
 	"github.com/RidgetopAi/backstory/internal/search"
@@ -179,5 +180,85 @@ func TestBuildItemsCarryHandoffStatusAndConfirmations(t *testing.T) {
 	mustLinkEdge(t, st, newer.ID, h.ID, store.EdgeSupersedes, sessionID)
 	if old := buildHandoffItem(t, st, h.ID); old.Status != StatusSuperseded || old.Handoff == nil {
 		t.Errorf("superseded Handoff: Status %q Handoff %+v, want superseded with a status", old.Status, old.Handoff)
+	}
+}
+
+// A record anchor always shows the Record it names, labelled with its
+// status, even an expired Draft or a confirm Record that a walk would fold
+// into its target. What the walk widens to from it follows the usual
+// rules: an expired Draft is left out, and confirms fold into their target.
+func TestBuildRecordAnchorAlwaysShowsItsRoot(t *testing.T) {
+	st := newTestStore(t)
+	mustUpsertProject(t, st, "proj-a")
+	sid := mustStartSession(t, st, "proj-a")
+	other := mustStartSession(t, st, "proj-a")
+	past := time.Now().Add(-time.Hour)
+	draft := func(text string) string {
+		t.Helper()
+		id, err := st.InsertRecord(store.InsertRecordParams{
+			Identity: store.Identity{Kind: store.IdentityInference}, Kind: store.KindNote, Text: text,
+			SessionID: sid, ProjectKey: "proj-a", ExpiresAt: &past,
+		})
+		if err != nil {
+			t.Fatalf("InsertRecord Draft: %v", err)
+		}
+		return id
+	}
+	affirm := func(session, target string) string {
+		t.Helper()
+		id, err := st.Confirm(store.ConfirmParams{
+			Identity: store.Identity{Kind: store.IdentityAgent}, Action: store.ConfirmAffirm, RecordID: target, SessionID: session, ProjectKey: "proj-a",
+		})
+		if err != nil {
+			t.Fatalf("Confirm affirm: %v", err)
+		}
+		return id
+	}
+	header := func(res Result, id string) string {
+		t.Helper()
+		for _, line := range strings.Split(res.Rendered, "\n") {
+			if strings.HasPrefix(line, shortID(id)+" · ") {
+				return line
+			}
+		}
+		t.Fatalf("no header for %s in:\n%s", shortID(id), res.Rendered)
+		return ""
+	}
+	build := func(root string) Result {
+		t.Helper()
+		res, err := Build(st, search.New(st), RecordAnchor(root), AltitudeSummary, testBudget, nil)
+		if err != nil {
+			t.Fatalf("Build: %v", err)
+		}
+		return res
+	}
+
+	expiredRoot := draft("an expired guess, named")
+	expiredLinked := draft("an expired guess, linked")
+	linked := mustInsertRecord(t, st, sid, "proj-a", store.KindNote, "linked to the expired guess")
+	mustLinkEdge(t, st, expiredRoot, expiredLinked, store.EdgeInforms, sid)
+	mustLinkEdge(t, st, expiredRoot, linked, store.EdgeInforms, sid)
+
+	res := build(expiredRoot)
+	if got, want := itemIDs(res.Items), []string{linked, expiredRoot}; strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("expired Draft anchor: items = %v, want %v (not the linked expired Draft %s)", got, want, expiredLinked)
+	}
+	if got, want := header(res, expiredRoot), shortID(expiredRoot)+" · note · inferred · expired "; !strings.HasPrefix(got, want) {
+		t.Errorf("expired Draft anchor's header = %q, want it to start %q", got, want)
+	}
+
+	target := mustInsertRecord(t, st, sid, "proj-a", store.KindDecision, "the affirmed decision")
+	named := affirm(sid, target)
+	folded := affirm(other, target)
+
+	res = build(named)
+	if got, want := itemIDs(res.Items), []string{named, target}; strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("affirm anchor: items = %v, want %v (not the other affirm %s, folded into the target)", got, want, folded)
+	}
+	if got, want := header(res, named), shortID(named)+" · confirm · agent-declared · current"; got != want {
+		t.Errorf("affirm anchor's header = %q, want %q", got, want)
+	}
+	if cs := itemByID(t, res.Items, target).ConfirmedBy; len(cs) != 2 {
+		t.Errorf("target's ConfirmedBy = %+v, want both affirms", cs)
 	}
 }

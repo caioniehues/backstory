@@ -345,8 +345,11 @@ func projectRecords(st *store.Store, anchor Anchor) ([]store.Record, error) {
 // Ledger from it (graph.Walk, graph.DefaultHops, plus the record's
 // Neighbours in its Project) and returns what the walk reached, newest first
 // by sequence, minus Tombstoned Records: recall never shows one (#32),
-// though the walk goes on through it. The notice carries the Searcher's
-// reason when Neighbours are missing. An anchor that resolves to no record
+// though the walk goes on through it. The record itself is always shown,
+// with its status, even an expired Draft or a confirm Record, since
+// graph.Walk keeps every seed; what the walk reaches leaves those out. The
+// notice carries the Searcher's reason when Neighbours are missing. An
+// anchor that resolves to no record
 // (unknown id, or an ambiguous short prefix) returns an empty set, not an
 // error: recall answering "nothing here" is this anchor's honest empty
 // state.

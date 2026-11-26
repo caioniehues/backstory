@@ -77,7 +77,14 @@ var errCaptureOff = errors.New("mcp: capture is off, no session started")
 // post-tool-use` already refuses to record on, passed in by daemon.go
 // rather than resolved here so this package never has to know how the flag
 // file's path is derived.
-func ServeDaemonConn(id ident.Identity, conn net.Conn, st *store.Store, searcher search.Searcher, procfs ident.ProcFS, git project.Git, logger *log.Logger, sessions *SessionRegistry, captureOff func() (bool, error), workspaces []string) {
+//
+// opts add what not every daemon has: WithQueryEmbedder backs embed_query,
+// which is answered before any of the above, with no session.
+func ServeDaemonConn(id ident.Identity, conn net.Conn, st *store.Store, searcher search.Searcher, procfs ident.ProcFS, git project.Git, logger *log.Logger, sessions *SessionRegistry, captureOff func() (bool, error), workspaces []string, opts ...ServeOption) {
+	var o serveOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
 	// The first request line decides the connection's identity: a plugin's
 	// harness-reported location (location.go) selects the project; every
 	// other case is the observed /proc identity, exactly as before. The
@@ -88,6 +95,14 @@ func ServeDaemonConn(id ident.Identity, conn net.Conn, st *store.Store, searcher
 	hasFirst := sc.Scan()
 	if hasFirst {
 		first = append([]byte(nil), sc.Bytes()...)
+		if isEmbedQuery(first) {
+			var req DaemonRequest
+			_ = json.Unmarshal(first, &req) // isEmbedQuery just parsed it
+			if b, err := json.Marshal(handleEmbedQuery(o.queryEmbedder, req.Params)); err == nil {
+				_, _ = conn.Write(append(b, '\n'))
+			}
+			return
+		}
 		id = applyLocation(id, first, sessions, git, workspaces)
 		id = applyShellIdentity(id, first, procfs)
 	} else {

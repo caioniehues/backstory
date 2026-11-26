@@ -10,6 +10,7 @@ package recall
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -595,30 +596,82 @@ func annotateWith(st *store.Store, rec store.Record, workspaces []string, hs *ha
 	return item, nil
 }
 
-// fit renders items at altitude, keeping only as many — in their given
-// order — as fit budgetTokens (block.EstimateTokens, the same estimator
-// the SessionStart block budgets against): it accumulates the actual
-// joined rendering incrementally and stops before a next item would push
-// the estimate over budget, so Result.Rendered's own estimate is always
-// <= budgetTokens and Result.Items is exactly the set that rendering
+// fit renders items at altitude, keeping only as many as fit budgetTokens
+// (block.EstimateTokens, the same estimator the SessionStart block budgets
+// against). Survivors are picked by priority (outranks: direct hits, then
+// edge-reached items by fewest hops, each tier in the given order) and
+// rendered in the given order, which is sequence order (#32). It adds them
+// one at a time, re-rendering the kept set, and stops before the first
+// that would push the estimate over budget, so a lower-priority item never
+// pushes out a higher one, Result.Rendered's own estimate is always <=
+// budgetTokens, and Result.Items is exactly the set that rendering
 // reflects.
 func fit(items []Item, altitude Altitude, budgetTokens int) Result {
+	order := make([]int, len(items))
+	for i := range order {
+		order[i] = i
+	}
+	sort.SliceStable(order, func(a, b int) bool { return outranks(items[order[a]].Reached, items[order[b]].Reached) })
+
 	sep := altitudeSeparator(altitude)
-	var kept []Item
-	rendered := ""
-	for _, item := range items {
-		line := renderItem(item, altitude)
-		candidate := line
-		if rendered != "" {
-			candidate = rendered + sep + line
+	lines := make([]string, len(items))
+	kept := make([]bool, len(items))
+	rendered, last := "", -1
+	for _, i := range order {
+		lines[i] = renderItem(items[i], altitude)
+		var candidate string
+		switch {
+		case last < 0:
+			candidate = lines[i]
+		case i > last:
+			// Every kept item comes before this one: append, as a project
+			// anchor (all direct hits) always does.
+			candidate = rendered + sep + lines[i]
+		default:
+			kept[i] = true
+			candidate = joinKept(lines, kept, sep)
+			kept[i] = false
 		}
 		if block.EstimateTokens(candidate) > budgetTokens {
 			break
 		}
-		rendered = candidate
-		kept = append(kept, item)
+		rendered, kept[i], last = candidate, true, max(last, i)
 	}
-	return Result{Items: kept, Rendered: rendered}
+	res := Result{Rendered: rendered}
+	for i, item := range items {
+		if kept[i] {
+			res.Items = append(res.Items, item)
+		}
+	}
+	return res
+}
+
+// outranks reports whether an item reached by a goes into the budget
+// before one reached by b: a direct hit (nil) first, then an edge-reached
+// item, fewer hops first. Anything else comes after those.
+func outranks(a, b *graph.Reached) bool {
+	if (a == nil) != (b == nil) {
+		return a == nil
+	}
+	if a == nil {
+		return false
+	}
+	aEdge, bEdge := a.Via == graph.ViaEdge, b.Via == graph.ViaEdge
+	if aEdge && bEdge {
+		return a.Hops < b.Hops
+	}
+	return aEdge && !bEdge
+}
+
+// joinKept joins the kept lines, in order, with sep.
+func joinKept(lines []string, kept []bool, sep string) string {
+	var parts []string
+	for i, line := range lines {
+		if kept[i] {
+			parts = append(parts, line)
+		}
+	}
+	return strings.Join(parts, sep)
 }
 
 func altitudeSeparator(altitude Altitude) string {

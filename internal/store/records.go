@@ -214,6 +214,9 @@ func (s *Store) InsertRecordWithEdges(p InsertRecordParams, edges []EdgeSpec) (s
 	if err := tx.Commit(); err != nil {
 		return "", fmt.Errorf("store: commit insert record: %w", err)
 	}
+	if f := s.onRecordWrite.Load(); f != nil {
+		(*f)()
+	}
 	return id, nil
 }
 

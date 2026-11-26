@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 
 	"github.com/RidgetopAi/backstory/internal/project"
 	_ "modernc.org/sqlite" // registers the pure-Go "sqlite" driver
@@ -25,6 +26,8 @@ type Store struct {
 	// legacyToCanonical maps a configured workspace dir's plain pre-79f7b20e
 	// key to its "workspace:" key (canonicalizeProjectKey's lookup table).
 	legacyToCanonical map[string]string
+	// onRecordWrite is OnRecordWrite's hook, nil when unset.
+	onRecordWrite atomic.Pointer[func()]
 }
 
 // Open opens (creating if needed) the SQLite database at path, and merges
@@ -155,4 +158,19 @@ func (s *Store) checkpointTruncate() error {
 		return fmt.Errorf("store: wal checkpoint: %w", err)
 	}
 	return nil
+}
+
+// OnRecordWrite sets f to run after each Record this Store writes is
+// committed (a Confirm included), replacing any earlier hook; nil clears it.
+// The daemon sets its embedding drain's wake here, so a Record the daemon
+// writes is embedded within seconds. f runs on the writer's goroutine after
+// the commit: it must return at once, and nothing it does can fail the
+// write. Writes by another process (the CLI, Sync) reach the drain through
+// its poll instead.
+func (s *Store) OnRecordWrite(f func()) {
+	if f == nil {
+		s.onRecordWrite.Store(nil)
+		return
+	}
+	s.onRecordWrite.Store(&f)
 }

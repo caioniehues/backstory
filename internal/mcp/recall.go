@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/RidgetopAi/backstory/internal/block"
+	"github.com/RidgetopAi/backstory/internal/handoff"
 	"github.com/RidgetopAi/backstory/internal/ident"
 	"github.com/RidgetopAi/backstory/internal/project"
 	"github.com/RidgetopAi/backstory/internal/recall"
@@ -292,6 +293,13 @@ func handleRecall(st *store.Store, searcher search.Searcher, git project.Git, id
 	anchor, err := resolveAnchor(st, projectKey, scope, p.Query)
 	if err != nil {
 		return errResponse("internal", err.Error())
+	}
+	if strings.TrimSpace(p.Project) == "" && id.CWD != "" {
+		// The caller's own location: a query that matches nothing falls
+		// back to the Handoff the SessionStart block at its folder resumes.
+		anchor = anchor.AskedFrom(handoff.Reader{
+			ProjectKey: id.ProjectKey, Dir: id.CWD, Branch: project.CurrentBranch(git, id.CWD), Git: git, Workspaces: workspaces,
+		})
 	}
 
 	built, err := recall.Build(st, searcher, anchor, altitude, budgetTokens, workspaces)

@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/RidgetopAi/backstory/internal/forgetting"
+	"github.com/RidgetopAi/backstory/internal/project"
 	"github.com/RidgetopAi/backstory/internal/store"
 )
 
@@ -76,7 +78,7 @@ func seedPurgeBackups(t *testing.T) purgeBackupFixture {
 		return dest
 	}
 	for _, d := range []time.Duration{0, 24 * time.Hour} {
-		fx.auto = append(fx.auto, mk(filepath.Join(fx.backupDir, store.AutoBackupName(autoT0.Add(d)))))
+		fx.auto = append(fx.auto, mk(filepath.Join(fx.backupDir, forgetting.AutoBackupName(autoT0.Add(d)))))
 	}
 	fx.manual = mk(filepath.Join(fx.backupDir, "backstory-20260302T090000Z.db"))
 	fx.preCopy = mk(dbPath + ".pre-restore-20260303T090000Z")
@@ -140,13 +142,13 @@ func TestPurgeDeletesBackupsHoldingTextThenTakesFreshOne(t *testing.T) {
 	}
 	// exactly one new backup in backupDir, without the marker
 	var fresh []string
-	ents, err := os.ReadDir(fx.backupDir)
+	copies, err := forgetting.Set{DBPath: fx.dbPath, BackupDir: fx.backupDir}.Copies()
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, e := range ents {
-		if backupFileName.MatchString(e.Name()) && e.Name() != filepath.Base(fx.link) {
-			fresh = append(fresh, filepath.Join(fx.backupDir, e.Name()))
+	for _, c := range copies {
+		if filepath.Dir(c.Path) == fx.backupDir {
+			fresh = append(fresh, c.Path)
 		}
 	}
 	if len(fresh) != 1 {
@@ -208,6 +210,30 @@ func TestPurgeDryRunListsBackupsAndDeletesNothing(t *testing.T) {
 	}
 	if n := countRows(t, fx.dbPath, `SELECT COUNT(*) FROM timeline_events WHERE payload LIKE ?`, "%"+purgeMarker+"%"); n != 1 {
 		t.Errorf("dry-run changed the store (marker events = %d)", n)
+	}
+}
+
+// The next pre-copy, for a reason no writer uses yet, is listed by the dry
+// run and deleted by the purge without purge knowing the reason.
+func TestPurgeReachesAPreCopyForAnyReason(t *testing.T) {
+	fx := seedPurgeBackups(t)
+	st, err := openStore(fx.dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := forgetting.PreCopyPath(fx.dbPath, forgetting.Reason("next"), autoT0)
+	if _, err := st.Backup(next, false); err != nil {
+		t.Fatal(err)
+	}
+	_ = st.Close()
+	if code, out, errs := runAutoCLI(t, "purge", "--session", fx.f.a, "--dry-run"); code != 0 || !strings.Contains(out, next) {
+		t.Errorf("dry-run (exit %d, %s) does not list %s:\n%s", code, errs, next, out)
+	}
+	if code, out, errs := runAutoCLI(t, "purge", "--session", fx.f.a, "--yes"); code != 0 {
+		t.Fatalf("exit %d out=%s err=%s", code, out, errs)
+	}
+	if exists(next) {
+		t.Errorf("%s survived the purge", next)
 	}
 }
 
@@ -275,4 +301,158 @@ func TestPurgeDryRunGolden(t *testing.T) {
 		lines[i] = dryRunBackupLine.ReplaceAllString(l, "  <date>  <size> bytes")
 	}
 	compareGolden(t, "../purge/dry-run.golden", strings.Join(lines, "\n"))
+}
+
+// noRepoGit answers "not a git working tree" for every dir, so a configured
+// workspace dir resolves to its workspace: key and the sweep has a target.
+type noRepoGit struct{}
+
+func (noRepoGit) Repo(string) (project.Repo, bool)   { return project.Repo{}, false }
+func (noRepoGit) State(string) (project.State, bool) { return project.State{}, false }
+
+// TestPurgeDeletesEveryCopyTheStoreKeepsBesideItself drives every writer of
+// a copy beside the store while it holds purgeMarker (restore, then the
+// sweep, repo-identity and handoff re-home migrations at Open) and purges
+// the marker: none of those copies may survive holding the text. It uses
+// the real writers rather than hand-made names, so a writer whose name purge
+// does not know fails here.
+func TestPurgeDeletesEveryCopyTheStoreKeepsBesideItself(t *testing.T) {
+	f := newRestoreFixture(t)
+	seedBackupStore(t, f.dbPath)
+	st, err := store.Open(f.dbPath, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpsertProject(store.Project{Key: purgeProject, Toplevel: purgeProject, FirstSeen: autoT0}); err != nil {
+		t.Fatal(err)
+	}
+	sid, err := st.StartSession(store.StartSessionParams{Agent: "claude", HarnessSessionID: "h-marker", CWD: purgeProject, ProjectKey: purgeProject, StartedAt: autoT0, Origin: store.OriginBackfilled})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.AppendEvent(store.Event{TS: autoT0, Kind: "tool.use", SessionID: sid, Source: "backfill", Payload: `{"text":"` + purgeMarker + `"}`}); err != nil {
+		t.Fatal(err)
+	}
+	_ = st.Close()
+
+	// restore keeps the replaced store aside.
+	if code, _, errs := f.restore(f.backup("b.db"), "--yes"); code != 0 {
+		t.Fatalf("restore: exit %d: %s", code, errs)
+	}
+
+	// Rows each Open-time migration rewrites, behind a pre-copy.
+	dir := t.TempDir()
+	ws := filepath.Join(dir, "projects")
+	wsKey := "workspace:" + ws
+	repo := filepath.Join(dir, "repo")
+	st, err = store.Open(f.dbPath, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ns := autoT0.UnixNano()
+	for _, q := range []struct {
+		sql  string
+		args []any
+	}{
+		// sweep: a legacy plain-path row for the configured workspace dir.
+		{`INSERT INTO projects (key, toplevel, first_seen) VALUES (?, ?, ?)`, []any{ws, ws, ns}},
+		// identity: a remote-less repo keyed by its toplevel, common dir known.
+		{`INSERT INTO projects (key, git_common_dir, toplevel, first_seen) VALUES (?, ?, ?, ?)`, []any{repo, filepath.Join(repo, ".git"), repo, ns}},
+		// rehome: a handoff homed on a workspace key by a repo-keyed session.
+		{`INSERT INTO projects (key, toplevel, first_seen) VALUES (?, ?, ?)`, []any{wsKey, ws, ns}},
+		{`INSERT INTO sessions (id, agent, cwd, project_key, started_at, origin) VALUES ('s-repo', 'claude', ?, ?, ?, 'live')`, []any{purgeProject, purgeProject, ns}},
+		{`INSERT INTO records (id, ts, kind, tier, text, about, session_id, project_key, evidence, event_cursor)
+			VALUES ('h-ws', ?, 'handoff', 'agent-declared', 'handoff', '[]', 's-repo', ?, '[]', 0)`, []any{ns, wsKey}},
+	} {
+		if _, err := st.DB().Exec(q.sql, q.args...); err != nil {
+			t.Fatalf("%s: %v", q.sql, err)
+		}
+	}
+	_ = st.Close()
+	st, err = store.Open(f.dbPath, []string{ws}, noRepoGit{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = st.Close()
+
+	copies, _ := filepath.Glob(f.dbPath + ".pre-*")
+	for _, infix := range []string{".pre-restore-", ".pre-sweep-", ".pre-identity-", ".pre-rehome-"} {
+		m, _ := filepath.Glob(f.dbPath + infix + "*")
+		if len(m) != 1 || !fileHas(t, m[0], purgeMarker) {
+			t.Fatalf("fixture: want one %s copy holding the marker, have %v (all copies: %v)", infix, m, copies)
+		}
+	}
+
+	if code, out, errs := runAutoCLI(t, "purge", "--session", sid, "--yes"); code != 0 {
+		t.Fatalf("purge: exit %d out=%s err=%s", code, out, errs)
+	}
+	left, _ := filepath.Glob(f.dbPath + ".pre-*")
+	for _, p := range left {
+		if fileHas(t, p, purgeMarker) {
+			t.Errorf("%s survived the purge holding the text", p)
+		}
+	}
+}
+
+// crashedTemp writes a temp file holding purgeMarker into dir under pattern,
+// as a backup or restore killed mid-write leaves one, last modified old ago.
+func crashedTemp(t *testing.T, dir, pattern string, old time.Duration) string {
+	t.Helper()
+	f, err := os.CreateTemp(dir, pattern)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString(purgeMarker); err != nil {
+		t.Fatal(err)
+	}
+	_ = f.Close()
+	at := time.Now().Add(-old)
+	if err := os.Chtimes(f.Name(), at, at); err != nil {
+		t.Fatal(err)
+	}
+	return f.Name()
+}
+
+// The temp files a crashed backup or restore left, holding the text, are
+// listed by the dry run and deleted by the purge once they are older than
+// forgetting.TempMargin; one a backup may still be writing is left alone.
+func TestPurgeDeletesTempFilesACrashLeftPastTheMargin(t *testing.T) {
+	fx := seedPurgeBackups(t)
+	old := []string{
+		crashedTemp(t, fx.backupDir, forgetting.BackupTemp, forgetting.TempMargin+time.Minute),
+		crashedTemp(t, fx.storeDir, forgetting.BackupTemp, 2*forgetting.TempMargin),
+		crashedTemp(t, fx.storeDir, forgetting.RestoreTemp, 2*forgetting.TempMargin),
+	}
+	fresh := crashedTemp(t, fx.backupDir, forgetting.BackupTemp, 0)
+
+	code, out, errs := runAutoCLI(t, "purge", "--session", fx.f.a, "--dry-run")
+	if code != 0 {
+		t.Fatalf("dry-run: exit %d err=%s", code, errs)
+	}
+	if !strings.Contains(out, "would also delete 3 temporary files") {
+		t.Errorf("dry-run does not count the leftovers:\n%s", out)
+	}
+	for _, p := range old {
+		if !strings.Contains(out, p) || !exists(p) {
+			t.Errorf("dry-run does not list %s, or deleted it:\n%s", p, out)
+		}
+	}
+	if strings.Contains(out, fresh) {
+		t.Errorf("dry-run lists %s, which a backup may still be writing", fresh)
+	}
+
+	if code, out, errs = runAutoCLI(t, "purge", "--session", fx.f.a, "--yes"); code != 0 {
+		t.Fatalf("purge: exit %d out=%s err=%s", code, out, errs)
+	}
+	for _, p := range old {
+		if exists(p) {
+			t.Errorf("%s survived the purge holding the text", p)
+		}
+	}
+	if !exists(fresh) {
+		t.Errorf("%s was deleted while a backup may still be writing it", fresh)
+	}
+	if !strings.Contains(out, "deleted 3 temporary files") {
+		t.Errorf("purge does not report the leftovers it deleted:\n%s", out)
+	}
 }

@@ -5,6 +5,9 @@ import (
 	"path/filepath"
 	"syscall"
 	"testing"
+	"time"
+
+	"github.com/RidgetopAi/backstory/internal/forgetting"
 )
 
 func modeOf(t *testing.T, p string) os.FileMode {
@@ -92,20 +95,29 @@ func TestStoreSideBackupsAre0600UnderUmask0022(t *testing.T) {
 	})
 }
 
+// Open tightens every pre-copy beside the store that an older version left
+// world-readable, whatever its reason and stamp, and no other file: a file
+// of the user's own that merely starts with the store's name keeps its mode.
 func TestOpenTightensExistingPreCopies(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "backstory.db")
-	var loose []string
-	for _, n := range []string{".pre-rehome-X", ".pre-sweep-X", ".pre-identity-X", ".pre-restore-X"} {
-		p := path + n
+	at := time.Date(2026, 3, 1, 8, 0, 0, 0, time.UTC)
+	writeLoose := func(p string) string {
+		t.Helper()
 		if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		if err := os.Chmod(p, 0o644); err != nil { //nolint:gosec // fixture: a legacy world-readable copy
 			t.Fatal(err)
 		}
-		loose = append(loose, p)
+		return p
 	}
+	var loose []string
+	for _, why := range []forgetting.Reason{forgetting.Rehome, forgetting.Sweep, forgetting.Identity, forgetting.Restore, forgetting.Reason("next")} {
+		loose = append(loose, writeLoose(forgetting.PreCopyPath(path, why, at)))
+	}
+	loose = append(loose, writeLoose(path+".pre-restore-20260301T080000Z")) // stamped to the second, as restore once did
+	mine := writeLoose(path + ".pre-upgrade-notes.txt")
 	s, err := Open(path, nil, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -115,5 +127,8 @@ func TestOpenTightensExistingPreCopies(t *testing.T) {
 		if got := modeOf(t, p); got != BackupFileMode {
 			t.Errorf("%s mode = %o after Open, want %o", filepath.Base(p), got, BackupFileMode)
 		}
+	}
+	if got := modeOf(t, mine); got != 0o644 {
+		t.Errorf("%s mode = %o after Open, want it left at 644", filepath.Base(mine), got)
 	}
 }

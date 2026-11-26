@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/RidgetopAi/backstory/internal/forgetting"
 	"github.com/RidgetopAi/backstory/internal/store"
 )
 
@@ -237,7 +238,7 @@ func TestAutoBackupFailureKeepsBackupsAndRaisesAttention(t *testing.T) {
 	// write fails with "exists" for root too (a read-only dir would not).
 	// Folders are not backups: they are not listed or counted.
 	for h := 24; h <= 47; h++ {
-		blocked := filepath.Join(dir, store.AutoBackupName(lastOK.Add(time.Duration(h)*time.Hour)))
+		blocked := filepath.Join(dir, forgetting.AutoBackupName(lastOK.Add(time.Duration(h)*time.Hour)))
 		if err := os.Mkdir(blocked, 0o700); err != nil {
 			t.Fatal(err)
 		}

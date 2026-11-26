@@ -731,11 +731,18 @@ func TestHookPostToolUseBashLargeOutputIsBoundedHeadAndTail(t *testing.T) {
 // returns every tool.use payload the project then holds.
 func toolUsePayloadsFor(t *testing.T, hookPayload map[string]any) []payload.ToolUse {
 	t.Helper()
+	return hookToolUsePayloadsFor(t, []string{"post-tool-use"}, hookPayload)
+}
+
+// hookToolUsePayloadsFor is toolUsePayloadsFor with the hook's own
+// arguments (e.g. post-tool-use --harness codex).
+func hookToolUsePayloadsFor(t *testing.T, hookArgs []string, hookPayload map[string]any) []payload.ToolUse {
+	t.Helper()
 	bin := buildBackstoryHarness(t)
 	dbPath, _, env := startTestDaemon(t, bin)
 	projectDir := t.TempDir()
 	hookPayload["cwd"] = projectDir
-	_, stderr, exitCode, _ := runHookInDir(t, bin, projectDir, env, []string{"post-tool-use"}, hookPayload)
+	_, stderr, exitCode, _ := runHookInDir(t, bin, projectDir, env, hookArgs, hookPayload)
 	if exitCode != 0 {
 		t.Fatalf("exit code = %d, want 0 (stderr: %s)", exitCode, stderr)
 	}

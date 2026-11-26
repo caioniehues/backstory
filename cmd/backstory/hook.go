@@ -14,6 +14,7 @@ import (
 
 	"github.com/RidgetopAi/backstory/internal/mcp"
 	"github.com/RidgetopAi/backstory/internal/payload"
+	"github.com/RidgetopAi/backstory/internal/tooluse"
 )
 
 // sessionStartPayload is a Claude Code SessionStart hook's JSON payload.
@@ -49,8 +50,9 @@ type sessionStartPayload struct {
 // already refuses to trust.
 const harnessCodex = "codex"
 
-// harnessPi is the `--harness` value the Pi extension passes. Pi sets
-// CommitAsk only when the payload opts in (postToolUsePayload.BackstoryCommitAsk).
+// harnessPi is the `--harness` value the Pi extension passes. It selects
+// tooluse.Pi, the normaliser Pi's Backfill uses, and Pi sets CommitAsk only
+// when the payload opts in (postToolUsePayload.BackstoryCommitAsk).
 const harnessPi = "pi"
 
 // A hook must never break a harness boot (AGENT-CONTRACT.md §The
@@ -265,8 +267,8 @@ var failureExitPattern = regexp.MustCompile(`^\s*Exit code (\d+)`)
 // the same Path/Command extraction as a successful call, IsError always set,
 // Exit only when the error text states one, and the error text as the output
 // the daemon redacts and excerpts exactly like a Bash result's.
-func buildPostToolUseFailureParams(p postToolUsePayload) mcp.PostToolUseParams {
-	params := buildPostToolUseParams(p)
+func buildPostToolUseFailureParams(p postToolUsePayload, harness string) mcp.PostToolUseParams {
+	params := buildPostToolUseParams(p, harness)
 	params.IsError = true
 	params.Interrupted = p.IsInterrupt
 	params.Output = payload.ElideMiddle(p.Error, payload.ToolOutputWireMaxRunes)
@@ -297,27 +299,11 @@ func runPostToolUseFailureHook(stdin io.Reader, stderr io.Writer, harness string
 		_, _ = fmt.Fprintln(stderr, "backstory hook: post-tool-use-failure payload missing tool_name")
 		return 0
 	}
-	params := buildPostToolUseFailureParams(payload)
+	params := buildPostToolUseFailureParams(payload, harness)
 	if _, err := callDaemon(payload.SessionID, mcp.DaemonMethodPostToolUse, params); err != nil {
 		_, _ = fmt.Fprintln(stderr, "backstory hook:", err)
 	}
 	return 0
-}
-
-// postToolUseFileTools is the tool_input field name PostToolUse extracts a
-// path from, for tools that carry one. It mirrors internal/backfill/claude/
-// tools.go's fileTools set (payload.MutatingFileTools plus Read) so a tool
-// use captured live and the same tool use later backfilled from a
-// transcript agree on which tools get a Path: two independent definitions
-// of that set disagreeing is exactly task 8ba5487a's class of bug.
-var postToolUseFileTools = buildPostToolUseFileTools()
-
-func buildPostToolUseFileTools() map[string]bool {
-	m := map[string]bool{"Read": true}
-	for name := range payload.MutatingFileTools {
-		m[name] = true
-	}
-	return m
 }
 
 // toolResponseExit is a PostToolUse payload's tool_response.exit_code field,
@@ -360,30 +346,10 @@ func bashOutput(raw json.RawMessage, tr toolResponseExit) string {
 	return payload.ElideMiddle(out, payload.ToolOutputWireMaxRunes)
 }
 
-// inputStringField extracts field from a tool_use block's raw tool_input
-// object, mirroring internal/backfill/claude/tools.go's own helper of the
-// same name. It returns "" for a missing/malformed/not-a-string field —
-// never an error, since a hook must never fail the tool call it is
-// reporting on.
-func inputStringField(input json.RawMessage, field string) string {
-	if len(input) == 0 {
-		return ""
-	}
-	var m map[string]any
-	if err := json.Unmarshal(input, &m); err != nil {
-		return ""
-	}
-	v, _ := m[field].(string)
-	return v
-}
-
-// bashToolNameLiteral is the tool_name both Claude and Codex report for a
-// shell command — the one PostToolUse field this task's two harnesses agree
-// on, per the original description's "the same JSON shape as Claude's
-// hooks". buildPostToolUseParams's Bash branch and runCodexPostToolUseHook's
-// dispatch both key off this single constant rather than each repeating the
-// "Bash" literal.
-const bashToolNameLiteral = "Bash"
+// bashToolName is the name every Harness's normaliser (internal/tooluse)
+// records a shell command under: the one tool whose tool_response carries
+// an exit code and output the daemon turns into a tool.result.
+const bashToolName = "Bash"
 
 // backstoryNoteToolPattern matches Backstory's own note MCP tool however the
 // harness prefixes it (mcp__backstory__note for Claude, mcp_backstory_note,
@@ -434,26 +400,33 @@ func noteRecordID(raw json.RawMessage) string {
 	return noteRecordID(obj.Content)
 }
 
-// buildPostToolUseParams normalises one PostToolUse payload into the wire
-// shape callDaemon sends: Path for a file-editing tool (or Read), Command
-// for Bash, Exit only when the payload's tool_response actually carried
-// exit_code. A tool outside both groups (Grep, Glob, WebFetch, ...) gets
-// neither Path nor Command — it still becomes a tool.use event server-side,
-// exactly like backfill's own toolUsePayload.
-func buildPostToolUseParams(p postToolUsePayload) mcp.PostToolUseParams {
-	params := mcp.PostToolUseParams{ToolUseID: p.ToolUseID, ToolName: p.ToolName}
+// buildPostToolUseParams normalises one Claude or Pi PostToolUse payload
+// into the wire shape callDaemon sends. The tool use itself (Name, Path,
+// Command) comes from the Harness's normaliser in internal/tooluse, the
+// one Backfill uses for the same Harness, so a call captured live and the
+// same call backfilled later agree.
+func buildPostToolUseParams(p postToolUsePayload, harness string) mcp.PostToolUseParams {
+	if harness == harnessPi {
+		return toolUseParams(p, tooluse.Pi(p.ToolUseID, p.ToolName, p.ToolInput))
+	}
+	return toolUseParams(p, tooluse.Claude(p.ToolUseID, p.ToolName, p.ToolInput))
+}
+
+// toolUseParams is one normalised tool use plus what only a live
+// tool_response carries: for Bash, Exit (only when the response actually
+// carried exit_code), the output and the interrupted flag; for Backstory's
+// own note tool, the created record's id.
+func toolUseParams(p postToolUsePayload, tu payload.ToolUse) mcp.PostToolUseParams {
+	params := mcp.PostToolUseParams{ToolUseID: tu.ToolUseID, ToolName: tu.Name, Path: tu.Path, Command: tu.Command}
 	switch {
-	case postToolUseFileTools[p.ToolName]:
-		params.Path = inputStringField(p.ToolInput, "file_path")
-	case p.ToolName == bashToolNameLiteral:
-		params.Command = inputStringField(p.ToolInput, "command")
+	case tu.Name == bashToolName:
 		var tr toolResponseExit
 		if len(p.ToolResponse) > 0 && json.Unmarshal(p.ToolResponse, &tr) == nil {
 			params.Exit = tr.ExitCode
 			params.Interrupted = tr.Interrupted
 			params.Output = bashOutput(p.ToolResponse, tr)
 		}
-	case backstoryNoteToolPattern.MatchString(p.ToolName):
+	case backstoryNoteToolPattern.MatchString(tu.Name):
 		params.RecordID = noteRecordID(p.ToolResponse)
 	}
 	return params
@@ -502,7 +475,7 @@ func runPostToolUseHook(stdin io.Reader, stdout, stderr io.Writer, harness strin
 		return runCodexPostToolUseHook(payload, stdout, stderr)
 	}
 
-	params := buildPostToolUseParams(payload)
+	params := buildPostToolUseParams(payload, harness)
 	// The installer's verification run (BACKSTORY_NO_SESSION) must never
 	// settle or print the ask. Only a caller that can show the line sets
 	// CommitAsk: Pi must opt in, because its fire-and-forget path throws
@@ -537,73 +510,27 @@ func callAndPrintAsk(sessionID string, params mcp.PostToolUseParams, stdout, std
 	return 0
 }
 
-// codexApplyPatchTool is the tool_name Codex's PostToolUse hook reports for
-// every file edit, add, or delete — a single tool covering what Claude
-// splits across Edit/Write/MultiEdit/NotebookEdit. Its tool_input carries the
-// patch text under the same "command" field Bash's tool_input uses (Codex
-// docs https://learn.chatgpt.com/docs/hooks), not a "file_path" field the way
-// Claude's file tools do.
-const codexApplyPatchTool = "apply_patch"
-
-// applyPatchFileHeaders are the apply_patch patch-text line prefixes that
-// each open a new file section, mapped to nothing beyond "this line names a
-// touched path" — apply_patch does not distinguish an add from an update
-// from a delete in what gets recorded here, exactly like Claude's own
-// MutatingFileTools does not distinguish an Edit from a Write. All three are
-// scanned by the SAME loop in parseApplyPatchPaths, not three separate
-// special-cased branches, specifically so dropping any one of them (e.g. Add
-// File) is a one-line regression a mutation test can catch, not three
-// independent chances to silently miss one.
-var applyPatchFileHeaders = []string{
-	"*** Update File: ",
-	"*** Add File: ",
-	"*** Delete File: ",
-}
-
-// parseApplyPatchPaths extracts every file path apply_patch's own patch text
-// touches, in the order their header lines appear. A line that matches none
-// of applyPatchFileHeaders (a hunk body, a context line, "*** Begin Patch")
-// contributes nothing — this never tries to interpret the patch body itself,
-// only the header lines that name what it touches.
-func parseApplyPatchPaths(patch string) []string {
-	var paths []string
-	for _, line := range strings.Split(patch, "\n") {
-		for _, header := range applyPatchFileHeaders {
-			if rest, ok := strings.CutPrefix(line, header); ok {
-				paths = append(paths, strings.TrimSpace(rest))
-				break
-			}
-		}
-	}
-	return paths
-}
-
 // runCodexPostToolUseHook is post-tool-use's Codex mapping (task 03e19dd4,
-// decision 3e14db82): apply_patch becomes one observed file-write event per
-// touched path (DONE WHEN clause 2), Bash is recorded exactly like Claude's
-// Bash already is (DONE WHEN clause 2, reusing buildPostToolUseParams's own
-// Bash branch — Codex's tool_response carries the same exit_code field
-// Claude's does), and any other tool_name — an MCP tool, or anything this
-// mapping does not yet know — records NOTHING and never dials the daemon at
-// all (DONE WHEN clause 3): never guess at a wire shape this hook has not
-// been told the meaning of.
+// decision 3e14db82). tooluse.CodexHook, the normaliser Codex's Backfill
+// shares, decides the tool uses: one per path an apply_patch touches, Bash
+// with its command, and nothing at all for any other tool_name (an MCP
+// tool, or anything it has not been told the input of), in which case the
+// daemon is never dialled. Bash goes through toolUseParams exactly like
+// Claude's (Codex's tool_response carries the same exit_code field), and
+// Codex honours PostToolUse additionalContext, so the post-commit ask is
+// shown; the installer's verification run must not settle it.
 func runCodexPostToolUseHook(p postToolUsePayload, stdout, stderr io.Writer) int {
-	switch p.ToolName {
-	case codexApplyPatchTool:
-		patch := inputStringField(p.ToolInput, "command")
-		for _, path := range parseApplyPatchPaths(patch) {
-			params := mcp.PostToolUseParams{ToolUseID: p.ToolUseID, ToolName: p.ToolName, Path: path}
-			if _, err := callDaemon(p.SessionID, mcp.DaemonMethodPostToolUse, params); err != nil {
-				_, _ = fmt.Fprintln(stderr, "backstory hook:", err)
-				return 0
-			}
-		}
-	case bashToolNameLiteral:
-		params := buildPostToolUseParams(p)
-		// Codex honors PostToolUse additionalContext, so the post-commit ask
-		// is shown; the installer's verification run must not settle it.
+	uses := tooluse.CodexHook(p.ToolUseID, p.ToolName, p.ToolInput)
+	if len(uses) == 1 && uses[0].Name == bashToolName {
+		params := toolUseParams(p, uses[0])
 		params.CommitAsk = os.Getenv(noSessionEnv) == ""
 		return callAndPrintAsk(p.SessionID, params, stdout, stderr)
+	}
+	for _, tu := range uses {
+		if _, err := callDaemon(p.SessionID, mcp.DaemonMethodPostToolUse, toolUseParams(p, tu)); err != nil {
+			_, _ = fmt.Fprintln(stderr, "backstory hook:", err)
+			return 0
+		}
 	}
 	return 0
 }

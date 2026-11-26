@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/RidgetopAi/backstory/internal/project"
 	"github.com/RidgetopAi/backstory/internal/search"
 	"github.com/RidgetopAi/backstory/internal/store"
 )
@@ -181,6 +182,64 @@ func TestWalkKeepsNeighboursInsideTheCallersScope(t *testing.T) {
 	}
 	if q := fake.queries[len(fake.queries)-1]; q.Scope != &ls {
 		t.Errorf("query scope = %v, want the location scope", q.Scope)
+	}
+}
+
+// A scope's Project is read under the key the store files it as, so a
+// caller spelling it the legacy way still gets its Neighbours.
+func TestWalkReadsTheScopesProjectUnderItsCanonicalKey(t *testing.T) {
+	f := newFixture(t)
+	seed := f.record(store.KindDecision, "the seed")
+	inProject := f.record(store.KindNote, "same Project")
+	legacy := f.project + project.KeySeparator + "git@example.com:fixture/proj-a.git"
+	if got := f.st.CanonicalProjectKey(legacy); got != f.project {
+		t.Fatalf("CanonicalProjectKey(%q) = %q, want %q", legacy, got, f.project)
+	}
+	fake := &fakeSearcher{neighbours: map[string][]search.Hit{seed: {near(inProject, 0.7)}}}
+
+	g := f.walkWith(fake, Limits{Neighbours: NeighboursPerSeed, Scope: Scope{ProjectKey: legacy}}, seed)
+
+	if want := []string{inProject, seed}; !sameIDs(nodeIDs(g), want) {
+		t.Errorf("nodes = %v, want %v (%s is in the Project %q names)", nodeIDs(g), want, inProject, legacy)
+	}
+}
+
+// Scope.Has is the one scope rule, recall's too: a Project scope holds the
+// Records filed under its canonical key, a location scope those under its
+// repo key or written by one of its Sessions.
+func TestScopeHasRecordsUnderTheCanonicalKey(t *testing.T) {
+	f := newFixture(t)
+	other := f.startSession("proj-b")
+	rec := func(id string) store.Record {
+		t.Helper()
+		r, err := f.st.GetRecord(id)
+		if err != nil {
+			t.Fatalf("GetRecord: %v", err)
+		}
+		return r
+	}
+	mine := rec(f.record(store.KindNote, "in proj-a"))
+	theirs := rec(f.insert(store.InsertRecordParams{
+		Identity: store.Identity{Kind: store.IdentityAgent}, Kind: store.KindNote, Text: "in proj-b", SessionID: other, ProjectKey: "proj-b",
+	}))
+	legacy := Scope{ProjectKey: f.project + project.KeySeparator + "git@example.com:fixture/proj-a.git"}
+	ls := store.LocationScope{SessionIDs: map[string]bool{other: true}}
+
+	for _, c := range []struct {
+		name  string
+		scope Scope
+		rec   store.Record
+		want  bool
+	}{
+		{"Project, its Record", Scope{ProjectKey: f.project}, mine, true},
+		{"Project, another's Record", Scope{ProjectKey: f.project}, theirs, false},
+		{"legacy spelling, its Record", legacy, mine, true},
+		{"location, its Session's Record", Scope{Location: &ls}, theirs, true},
+		{"location, another Session's Record", Scope{Location: &ls}, mine, false},
+	} {
+		if got := c.scope.Has(f.st, c.rec); got != c.want {
+			t.Errorf("%s: Has = %v, want %v", c.name, got, c.want)
+		}
 	}
 }
 

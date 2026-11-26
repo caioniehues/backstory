@@ -28,12 +28,17 @@ type Scope struct {
 	Location   *store.LocationScope
 }
 
-// has reports whether rec is inside the scope.
-func (s Scope) has(rec store.Record) bool {
+// Has reports whether rec is inside the scope, every Project key read
+// under the key st files it as: the location scope's own rule
+// (store.LocationScope.HasRecord) when Location is set, else rec's Project
+// is ProjectKey's. It is the one scope rule, for Neighbours and for
+// recall's other-Project label alike.
+func (s Scope) Has(st *store.Store, rec store.Record) bool {
+	rec.ProjectKey = st.CanonicalProjectKey(rec.ProjectKey)
 	if s.Location != nil {
 		return s.Location.HasRecord(rec)
 	}
-	return rec.ProjectKey == s.ProjectKey
+	return rec.ProjectKey == st.CanonicalProjectKey(s.ProjectKey)
 }
 
 // NeighbourEdge joins a seed to a Record close to it in meaning.
@@ -125,7 +130,7 @@ func (w *walker) eligible(seed string, hits []search.Hit, limits Limits) ([]sear
 			break
 		}
 		rec, ok := byID[h.RecordID]
-		if !ok || rec.ID == seed || !limits.Scope.has(rec) {
+		if !ok || rec.ID == seed || !limits.Scope.Has(w.st, rec) {
 			continue
 		}
 		live, err := w.live(rec)

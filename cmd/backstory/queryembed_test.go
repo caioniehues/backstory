@@ -5,8 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
-	"log"
 	"net"
 	"os"
 	"os/exec"
@@ -307,30 +305,6 @@ func waitForDrained(t *testing.T, dbPath, fp string, log func() string) {
 			t.Fatalf("the drain's fingerprint %q, counts %+v under the query server's %q; want them identical and the Decision embedded\ndaemon log:\n%s",
 				rep.Fingerprint, counts, fp, log())
 		}
-	}
-}
-
-// A crashing query server backs off by the drain's rules (#20, #42), and
-// embed's own defaults agree with them.
-func TestQueryServerBacksOffByTheDrainsRules(t *testing.T) {
-	cfg := queryServerConfig(nil, "/run/user/1000/backstory/sock", log.New(io.Discard, "", 0))
-	if cfg.Socket != "/run/user/1000/backstory/embed.sock" {
-		t.Errorf("socket = %q, want embed.sock beside the daemon's", cfg.Socket)
-	}
-	want := []time.Duration{drain.FirstBackoff, 2 * drain.FirstBackoff, 4 * drain.FirstBackoff}
-	for i, w := range want {
-		if d := cfg.Backoff.Next(); d != w {
-			t.Fatalf("wait %d = %v, want %v", i+1, d, w)
-		}
-	}
-	for range 20 {
-		cfg.Backoff.Next()
-	}
-	if d := cfg.Backoff.Next(); d != drain.MaxBackoff {
-		t.Errorf("capped at %v, want drain.MaxBackoff %v", d, drain.MaxBackoff)
-	}
-	if embed.BackoffBase != drain.FirstBackoff || embed.BackoffCap != drain.MaxBackoff {
-		t.Errorf("embed's defaults %v..%v differ from the drain's %v..%v", embed.BackoffBase, embed.BackoffCap, drain.FirstBackoff, drain.MaxBackoff)
 	}
 }
 

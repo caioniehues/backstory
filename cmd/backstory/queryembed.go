@@ -4,7 +4,6 @@ import (
 	"log"
 	"path/filepath"
 
-	"github.com/RidgetopAi/backstory/internal/drain"
 	"github.com/RidgetopAi/backstory/internal/embed"
 	"github.com/RidgetopAi/backstory/internal/mcp"
 	"github.com/RidgetopAi/backstory/internal/search"
@@ -18,21 +17,14 @@ const queryServerSocketName = "embed.sock"
 
 // startQueryServer starts the daemon's warm query server (#43): it follows
 // `embed --on`/`--off` by itself, so the daemon only starts it here and
-// closes it on the way out. Its socket sits beside daemonSock.
+// closes it on the way out. Its socket sits beside daemonSock. A crash or a
+// failed start backs off by embed.Backoff's default rule, the drain's too.
 func startQueryServer(st *store.Store, daemonSock string, logger *log.Logger) *embed.QueryServer {
-	return embed.StartQueryServer(queryServerConfig(st, daemonSock, logger))
-}
-
-// queryServerConfig is the query server's configuration. A crash or a
-// failed start backs off by the drain's rules (#42): drain.FirstBackoff,
-// doubling, capped at drain.MaxBackoff.
-func queryServerConfig(st *store.Store, daemonSock string, logger *log.Logger) embed.QueryServerConfig {
-	return embed.QueryServerConfig{
+	return embed.StartQueryServer(embed.QueryServerConfig{
 		Settings: st,
 		Socket:   filepath.Join(filepath.Dir(daemonSock), queryServerSocketName),
-		Backoff:  &embed.Backoff{Base: drain.FirstBackoff, Cap: drain.MaxBackoff},
 		Logf:     logger.Printf,
-	}
+	})
 }
 
 // cliSearcher is the Searcher the CLI's own commands (recall, export) use.

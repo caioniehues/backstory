@@ -209,10 +209,7 @@ func embedCatchUp(st *store.Store, stdout, stderr io.Writer) int {
 		out, err := d.Pass(ctx)
 		switch out {
 		case drain.Drained:
-			c := store.EmbedCounts{}
-			if r, ok, _ := drain.ReadReport(st); ok && r.Fingerprint != "" {
-				c, _ = st.EmbedCounts(r.Fingerprint)
-			}
+			_, c, _, _ := drain.ReadReportCounts(st)
 			_, _ = fmt.Fprintf(stdout, "caught up: %d of %d embedded, %d skipped\n", c.Embedded, c.Embedded+c.Queued, d.Skipped())
 			return 0
 		case drain.Off:
@@ -230,12 +227,12 @@ func embedCatchUp(st *store.Store, stdout, stderr io.Writer) int {
 			return 1
 		}
 		line := "waiting for the drain lease to be free"
-		if r, ok, err := drain.ReadReport(st); err == nil && ok && r.Fingerprint != "" && held {
-			c, err := st.EmbedCounts(r.Fingerprint)
-			if err != nil {
-				_, _ = fmt.Fprintln(stderr, "backstory embed:", err)
-				return 1
-			}
+		_, c, counted, err := drain.ReadReportCounts(st)
+		if err != nil {
+			_, _ = fmt.Fprintln(stderr, "backstory embed:", err)
+			return 1
+		}
+		if counted && held {
 			if c.Queued == 0 {
 				_, _ = fmt.Fprintf(stdout, "caught up by the daemon (pid %d): %d of %d embedded\n", l.Holder, c.Embedded, c.Embedded)
 				return 0
@@ -307,7 +304,7 @@ func embeddingsStatus(st *store.Store) (string, bool) {
 	if !on {
 		return "embeddings: off", true
 	}
-	r, ok, err := drain.ReadReport(st)
+	r, c, counted, err := drain.ReadReportCounts(st)
 	if err != nil {
 		return "", false
 	}
@@ -321,12 +318,8 @@ func embeddingsStatus(st *store.Store) (string, bool) {
 	switch {
 	case r.SetupError != "":
 		return "embeddings: on, not embedding: " + oneLine(r.SetupError) + failure, true
-	case !ok || r.Fingerprint == "":
+	case !counted:
 		return "embeddings: on, not drained yet (the daemon embeds in the background)", true
-	}
-	c, err := st.EmbedCounts(r.Fingerprint)
-	if err != nil {
-		return "", false
 	}
 	return fmt.Sprintf("embeddings: on (%s), %d embedded, %d queued, %d skipped%s",
 		embed.ShortFingerprint(r.Fingerprint), c.Embedded, c.Queued, r.Skipped, failure), true

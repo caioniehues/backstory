@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/RidgetopAi/backstory/internal/block"
+	"github.com/RidgetopAi/backstory/internal/handoff"
 	"github.com/RidgetopAi/backstory/internal/search"
 	"github.com/RidgetopAi/backstory/internal/store"
 )
@@ -165,11 +166,11 @@ type Item struct {
 	ExpiresAt *time.Time
 
 	// StaleReasons is set only when Status is StatusPossiblyStale: every
-	// reason store.HandoffFreshness found, each carrying its own evidence
+	// reason handoff.Of found, each carrying its own evidence
 	// ids.
 	StaleReasons []store.FreshnessReason
 
-	// Done is set for a handoff the human marked done (store.HandoffDone);
+	// Done is set for a handoff the human marked done (handoff.Of);
 	// DoneAt is when. A done handoff is never possibly stale and is not a
 	// resume instruction.
 	Done   bool
@@ -203,7 +204,7 @@ type Result struct {
 // directory list (task 482b2320, decision f3fa04c7's clause 7): recall
 // never resolves workspace dirs itself (no project.DefaultWorkspaceDirs
 // call, no env read) — it only needs the list to pass through to
-// store.HandoffFreshness when annotating a handoff's possibly-stale status.
+// handoff.Of when annotating a handoff's possibly-stale status.
 func Build(st *store.Store, searcher search.Searcher, anchor Anchor, altitude Altitude, budgetTokens int, workspaces []string) (Result, error) {
 	recs, said, err := resolve(st, searcher, anchor)
 	if err != nil {
@@ -457,19 +458,14 @@ func annotate(st *store.Store, rec store.Record, workspaces []string) (Item, err
 	// StatusContradicted check below is not, so a handoff never falls
 	// through to that check at all — flagged or not.
 	if rec.Kind == store.KindHandoff {
-		if doneAt, done, err := st.HandoffDone(rec.ID); err != nil {
-			return Item{}, fmt.Errorf("recall: annotate %s: done: %w", rec.ID, err)
-		} else if done {
-			item.Done, item.DoneAt = true, doneAt
-			return item, nil
-		}
-		reasons, err := st.HandoffFreshness(rec, workspaces)
+		status, err := handoff.Of(st, rec, workspaces)
 		if err != nil {
-			return Item{}, fmt.Errorf("recall: annotate %s: freshness: %w", rec.ID, err)
+			return Item{}, fmt.Errorf("recall: annotate %s: %w", rec.ID, err)
 		}
-		if len(reasons) > 0 {
+		item.Done, item.DoneAt = status.Done, status.DoneAt
+		if status.PossiblyStale() {
 			item.Status = StatusPossiblyStale
-			item.StaleReasons = reasons
+			item.StaleReasons = status.Reasons
 		}
 		return item, nil
 	}

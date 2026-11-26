@@ -242,6 +242,35 @@ func mustInsertHandoffAtTS(t *testing.T, st *store.Store, sessionID, projectKey 
 	return id
 }
 
+// A failure a later run of the same command passed is not Possibly stale
+// evidence in recall either: the block already said so, recall still
+// labelled the handoff possibly-stale (#2).
+func TestBuildClearedFailureIsNotPossiblyStale(t *testing.T) {
+	st, sessionID := newFreshnessFixture(t)
+	h := mustInsertHandoffAbout(t, st, sessionID, nil)
+	run := func(useID string, exit int) {
+		t.Helper()
+		use, _ := json.Marshal(payload.ToolUse{ToolUseID: useID, Name: "Bash", Command: "go test ./..."})
+		res, _ := json.Marshal(payload.ToolResult{ToolUseID: useID, IsError: exit != 0, Exit: &exit})
+		for _, e := range []store.Event{
+			{TS: time.Now(), Kind: payload.KindToolUse, SessionID: sessionID, Source: "posttooluse", Payload: string(use)},
+			{TS: time.Now(), Kind: payload.KindToolResult, SessionID: sessionID, Source: "posttooluse", Payload: string(res)},
+		} {
+			if _, err := st.AppendEvent(e); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	run("t1", 1)
+	if item := buildHandoffItem(t, st, h.ID); item.Status != StatusPossiblyStale {
+		t.Fatalf("open failure: status %q, want %q", item.Status, StatusPossiblyStale)
+	}
+	run("t2", 0)
+	if item := buildHandoffItem(t, st, h.ID); item.Status == StatusPossiblyStale || len(item.StaleReasons) != 0 {
+		t.Fatalf("cleared failure: item = %+v, want not possibly stale", item)
+	}
+}
+
 // A done handoff is Done with the date, never possibly stale.
 func TestBuildDoneHandoffIsDoneNotStale(t *testing.T) {
 	st, sessionID := newFreshnessFixture(t)

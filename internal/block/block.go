@@ -424,9 +424,10 @@ func branchPointerLines(p Params, readerBranch string, pick resumePick) (string,
 }
 
 // pickResume is the Resume handoff (handoff.ResumeFor) for the reader at
-// p.CWD on readerBranch, plus what the block adds at a Workspace root or a
-// non-git folder sharing its key: the Handoff's location label, or with none
-// a pointer line naming the projects that have one.
+// p.CWD on readerBranch, plus what the block adds where the reader's
+// Handoffs are filed at a Workspace (project.HandoffHome: its root, or a
+// non-git folder under it at any depth): the Handoff's location label, or
+// with none a pointer line naming the projects that have one.
 func pickResume(p Params, readerBranch string) (resumePick, error) {
 	res, err := hstatus.ResumeFor(p.Store, hstatus.Reader{
 		ProjectKey: p.ProjectKey, Dir: p.CWD, Branch: readerBranch, Git: p.Git, Workspaces: p.WorkspaceDirs,
@@ -438,10 +439,11 @@ func pickResume(p Params, readerBranch string) (resumePick, error) {
 	if p.CWD == "" {
 		return pk, nil
 	}
-	home, ok := project.WorkspaceHome(p.CWD, p.WorkspaceDirs)
-	if !ok || home != p.ProjectKey {
-		// Inside a specific repo under the workspace (or no workspace at
-		// all): no label, the caller is already inside it.
+	home := project.HandoffHome(p.CWD, p.ProjectKey, p.WorkspaceDirs)
+	if !project.IsWorkspaceKey(home) {
+		// The reader's Handoffs are filed at its own Project (a repo, under a
+		// Workspace or not, or a folder outside every Workspace): no label,
+		// the caller is already inside it.
 		return pk, nil
 	}
 	if !pk.found {

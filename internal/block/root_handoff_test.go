@@ -181,3 +181,27 @@ func (f commonDirFakeGit) Repo(dir string) (project.Repo, bool) {
 	return project.Repo{}, false
 }
 func (f commonDirFakeGit) State(string) (project.State, bool) { return project.State{}, false }
+
+// A non-git folder deeper under the Workspace files its Handoffs at the
+// Workspace too (project.HandoffHome, #5), though its own key is its bare
+// folder, so the block treats it as it treats a folder sharing the root's
+// key (#4): with no Handoff of its own, the pointer line names the
+// projects that have one; with one, its Resume line names its location.
+func TestDeepNonGitFolderIsAtItsWorkspaceHome(t *testing.T) {
+	f := newRootFixture(t)
+	drafts, deep := f.workspace+"/group/drafts", f.workspace+"/group/notes"
+	mustUpsertProject(t, f.s, drafts)
+	mustUpsertProject(t, f.s, deep)
+	other := f.handoff(drafts, drafts, "drafts triaged")
+
+	out := f.render(deep, deep)
+	if strings.Contains(out, "Resume:") || !strings.Contains(out, "Handoffs exist in projects") || !strings.Contains(out, "projects/group/drafts (id "+other+")") {
+		t.Fatalf("deep folder block = %q, want no Resume line and the pointer naming projects/group/drafts (%s)", out, other)
+	}
+
+	own := f.handoff(deep, deep, "notes reorganised")
+	out = f.render(deep, deep)
+	if !strings.Contains(lineWith(out, "Resume:"), "(id "+own+")") || lineWith(out, "Location:") != "Location: projects/group/notes" {
+		t.Fatalf("deep folder block = %q, want its own handoff %s with Location: projects/group/notes", out, own)
+	}
+}

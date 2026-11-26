@@ -13,7 +13,7 @@ import (
 // No daemon method and no agent tool imports.
 func TestSocketAPIExposesNoSyncImport(t *testing.T) {
 	for _, method := range []string{"import", "sync", "sync_import", "import_sync_changes", "push", "sync_push", "sync-serve", "pull"} {
-		resp := dispatchDaemonRequest([]byte(`{"method":"`+method+`","params":{"changes":[]}}`), nil, nil, nil,
+		resp := dispatchDaemonRequest([]byte(`{"method":"`+method+`","params":{"changes":[]}}`), nil, daemonSearchers{}, nil,
 			store.Identity{Kind: store.IdentityAgent}, "", ident.Identity{Kind: ident.KindAgent}, nil, nil, nil)
 		if resp.Error == nil || resp.Error.Code != "unknown-method" {
 			t.Errorf("method %q: response %+v, want unknown-method", method, resp)

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/RidgetopAi/backstory/internal/search"
+	"github.com/RidgetopAi/backstory/internal/store"
 )
 
 // DaemonMethodEmbedQuery embeds search query text on the daemon's warm
@@ -55,7 +56,8 @@ type EmbedQueryResult struct {
 type ServeOption func(*serveOptions)
 
 type serveOptions struct {
-	queryEmbedder search.Embedder
+	queryEmbedder  search.Embedder
+	recordEmbedder search.Embedder
 }
 
 // WithQueryEmbedder gives the daemon's embed_query method its query
@@ -63,6 +65,32 @@ type serveOptions struct {
 // "embeddings off".
 func WithQueryEmbedder(e search.Embedder) ServeOption {
 	return func(o *serveOptions) { o.queryEmbedder = e }
+}
+
+// WithRecordEmbedder gives note's related-Decisions check its embedder for
+// the new Decision's text: the batch path (embed.RecordEmbedder), never the
+// warm query server, which holds query text only (#37 user story 45).
+// Without it the check is text-only.
+func WithRecordEmbedder(e search.Embedder) ServeOption {
+	return func(o *serveOptions) { o.recordEmbedder = e }
+}
+
+// daemonSearchers are a connection's two Searchers: recall's, whose
+// embedder is the warm query server, and note's related-Decisions check's,
+// whose embedder is the batch path.
+type daemonSearchers struct {
+	recall, related search.Searcher
+}
+
+// relatedSearcher is the Searcher note's related-Decisions check uses: over
+// the record embedder under RelatedEmbedDeadline, or text-only without one.
+// It never uses the connection's own Searcher, whose embedder is the query
+// server.
+func (o serveOptions) relatedSearcher(st *store.Store) search.Searcher {
+	if o.recordEmbedder == nil {
+		return search.New(st)
+	}
+	return search.New(st, search.WithEmbedder(o.recordEmbedder), search.WithDeadline(RelatedEmbedDeadline))
 }
 
 // isEmbedQuery reports whether a connection's first request line is

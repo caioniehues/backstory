@@ -107,6 +107,12 @@ const (
 	MaxRelatedDecisions = 3
 	// RelatedTextRunes is the length a candidate's text is truncated to.
 	RelatedTextRunes = 160
+	// RelatedEmbedDeadline is how long the check waits for the new
+	// Decision's text to be embedded before it goes text-only. The text
+	// takes the batch path (a llama-embedding run, about 0.45 s warm per
+	// #19, plus the device lookup on its first use), not the warm query
+	// server, so it gets longer than search.QueryEmbedDeadline.
+	RelatedEmbedDeadline = 2 * time.Second
 )
 
 // relatedMessage is the one line telling the agent what to do with the
@@ -115,9 +121,12 @@ const relatedMessage = "these current decisions may be about the same thing: if 
 
 // relatedDecisions looks up the candidates for a just-written decision:
 // current Decisions in its Project sharing an about path (most shared
-// first), then those a search on its text's key words finds, never the decision
-// itself or the one it supersedes. The search's reason is ignored.
-func relatedDecisions(st *store.Store, searcher search.Searcher, rec store.Record, supersedes string) ([]RelatedDecision, error) {
+// first), then those a search on its text finds (by its key words, and by
+// meaning when related's embedder answers in time), never the decision
+// itself or the one it supersedes. related must embed through the batch
+// path, never the query server (serveOptions.relatedSearcher). The
+// search's reason is ignored.
+func relatedDecisions(st *store.Store, related search.Searcher, rec store.Record, supersedes string) ([]RelatedDecision, error) {
 	skip := map[string]bool{rec.ID: true}
 	if supersedes != "" {
 		skip[supersedes] = true
@@ -137,7 +146,7 @@ func relatedDecisions(st *store.Store, searcher search.Searcher, rec store.Recor
 		add(id)
 	}
 	if need := MaxRelatedDecisions - len(ids); need > 0 {
-		found, err := searcher.Search(context.Background(), search.Query{
+		found, err := related.Search(context.Background(), search.Query{
 			Text: rec.Text, ProjectKey: rec.ProjectKey,
 			Kinds: []store.RecordKind{store.KindDecision}, CurrentOnly: true, KeyTermsOnly: true,
 			// skip holds ids the merge drops, so fetch that many more.
@@ -196,7 +205,10 @@ var noteKinds = map[string]store.RecordKind{
 // `backstory hook post-tool-use` already does before it ever dials the
 // daemon — note is reachable from any socket peer, so the daemon itself
 // must refuse it too.
-func handleNote(st *store.Store, searcher search.Searcher, git project.Git, identity store.Identity, sessionID, projectKey, cwd string, workspaces []string, raw json.RawMessage, captureOff func() (bool, error)) DaemonResponse {
+//
+// related is the related-Decisions check's Searcher, never the
+// connection's own (serveOptions.relatedSearcher).
+func handleNote(st *store.Store, related search.Searcher, git project.Git, identity store.Identity, sessionID, projectKey, cwd string, workspaces []string, raw json.RawMessage, captureOff func() (bool, error)) DaemonResponse {
 	if off, err := captureOff(); err != nil {
 		return errResponse("internal", err.Error())
 	} else if off {
@@ -317,12 +329,12 @@ func handleNote(st *store.Store, searcher search.Searcher, git project.Git, iden
 
 	nr := NoteResult{ID: id, Tier: string(rec.Tier), ProjectKey: rec.ProjectKey, Edges: noteEdges, VisibleAt: visibleAt, Message: visibleMessage(visibleAt)}
 	if kind == store.KindDecision {
-		related, err := relatedDecisions(st, searcher, rec, p.Supersedes)
+		candidates, err := relatedDecisions(st, related, rec, p.Supersedes)
 		if err != nil {
 			return errResponse("internal", err.Error())
 		}
-		if len(related) > 0 {
-			nr.RelatedDecisions = related
+		if len(candidates) > 0 {
+			nr.RelatedDecisions = candidates
 			nr.Message = relatedMessage
 		}
 	}

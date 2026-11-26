@@ -58,7 +58,7 @@ func (s *Store) Backup(dest string, overwrite bool) (BackupInfo, error) {
 	}
 	// VACUUM INTO requires a target that does not exist, so reserve a unique
 	// name in dir and remove the placeholder (it is created 0600 by CreateTemp).
-	tmpf, err := os.CreateTemp(dir, ".backstory-backup-*.tmp")
+	tmpf, err := os.CreateTemp(dir, forgetting.BackupTemp) // a crash leaves it for forgetting.Leftovers
 	if err != nil {
 		return BackupInfo{}, fmt.Errorf("store: backup: temp file: %w", err)
 	}

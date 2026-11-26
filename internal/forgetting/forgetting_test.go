@@ -145,3 +145,96 @@ func TestPreCopyPathRefusesAReasonCopiesCouldNotFind(t *testing.T) {
 		}()
 	}
 }
+
+// age sets path's modification time to d before now.
+func age(t *testing.T, path string, now time.Time, d time.Duration) string {
+	t.Helper()
+	at := now.Add(-d)
+	if err := os.Chtimes(path, at, at); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// tempIn makes a temp file the way a writer does, with the pattern named here.
+func tempIn(t *testing.T, dir, pattern string) string {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.CreateTemp(dir, pattern)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString("text"); err != nil {
+		t.Fatal(err)
+	}
+	_ = f.Close()
+	return f.Name()
+}
+
+// A backup or restore killed mid-write leaves its temp file, holding the
+// store's text, in the backup folder or beside the store. Leftovers finds
+// those once they are older than TempMargin, and never one a backup or
+// restore may still be writing, nor any other file.
+func TestLeftoversFindsOnlyCrashedTempFilesPastTheMargin(t *testing.T) {
+	dir := t.TempDir()
+	db := write(t, filepath.Join(dir, "data", "backstory.db"))
+	data := filepath.Dir(db)
+	backups := filepath.Join(dir, "backups")
+	now := time.Now()
+	var want []string
+	for _, d := range []string{data, backups} {
+		for _, pattern := range []string{BackupTemp, RestoreTemp} {
+			want = append(want, age(t, tempIn(t, d, pattern), now, TempMargin+time.Minute))
+		}
+	}
+	fresh := []string{
+		tempIn(t, backups, BackupTemp),                                    // being written now
+		age(t, tempIn(t, data, RestoreTemp), now, TempMargin-time.Minute), // still inside the margin
+	}
+	for _, p := range []string{
+		filepath.Join(backups, ".backstory-backup-.tmp"),
+		filepath.Join(backups, ".backstory-backup-1.tmp.db"),
+		filepath.Join(backups, ".backstory-writable-1.tmp"),
+		filepath.Join(data, ".backstory-export-1"),
+		filepath.Join(dir, "elsewhere", ".backstory-backup-1.tmp"),
+	} {
+		age(t, write(t, p), now, 2*TempMargin)
+	}
+	sub := filepath.Join(backups, ".backstory-backup-2.tmp")
+	if err := os.Mkdir(sub, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	age(t, sub, now, 2*TempMargin)
+
+	got, err := Set{DBPath: db, BackupDir: backups}.Leftovers(now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != len(want) {
+		t.Errorf("found %d leftovers, want %d: %v", len(got), len(want), got)
+	}
+	for _, p := range want {
+		if !paths(got)[p] {
+			t.Errorf("%s not found", p)
+		}
+	}
+	for _, p := range fresh {
+		if paths(got)[p] {
+			t.Errorf("%s is inside the margin and may still be being written", p)
+		}
+	}
+}
+
+// With the backup folder beside the store, each leftover is listed once.
+func TestLeftoversListsEachFileOnce(t *testing.T) {
+	dir := t.TempDir()
+	db := write(t, filepath.Join(dir, "backstory.db"))
+	now := time.Now()
+	p := age(t, tempIn(t, dir, BackupTemp), now, 2*TempMargin)
+	got, err := Set{DBPath: db, BackupDir: dir}.Leftovers(now)
+	if err != nil || len(got) != 1 || got[0].Path != p {
+		t.Fatalf("Leftovers = %v, %v; want just %s", got, err, p)
+	}
+}

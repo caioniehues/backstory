@@ -1,7 +1,9 @@
 // Package forgetting is the one place that knows every stored copy of the
 // store's text outside the store file itself: the backup set. Every writer of
 // such a copy takes its name from here, and Purge finds the copies here, so a
-// new kind of copy is reached by Purge the day it is first written. Record
+// new kind of copy is reached by Purge the day it is first written. It also
+// names the temporary files a copy is written through, and finds the ones a
+// crash left (Leftovers) so Purge deletes those too. Record
 // vectors live inside the store file and are forgotten with their Record
 // (tombstoneRecordTx); they are not copies in this sense.
 package forgetting
@@ -117,6 +119,59 @@ func (s Set) Copies() ([]Copy, error) {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
 	return out, nil
+}
+
+// The os.CreateTemp patterns of the temporary files that hold the store's
+// text while it is being copied: a backup (store.Backup) builds its snapshot
+// as BackupTemp beside where the backup goes, and restore copies the backup
+// it swaps in to RestoreTemp beside the store. A copy killed mid-write
+// leaves its temporary file behind.
+const (
+	BackupTemp  = ".backstory-backup-*.tmp"
+	RestoreTemp = ".backstory-restore-*.tmp"
+)
+
+// TempMargin is how long a temporary file must go unmodified before
+// Leftovers counts it as left by a crash: a backup or restore still writing
+// one keeps changing it, so one inside the margin may still be in use.
+const TempMargin = time.Hour
+
+// isTempName is true for a name os.CreateTemp gives for BackupTemp or
+// RestoreTemp: the pattern's prefix, a non-empty random part, its suffix.
+func isTempName(name string) bool {
+	for _, p := range []string{BackupTemp, RestoreTemp} {
+		pre, suf, _ := strings.Cut(p, "*")
+		if len(name) > len(pre)+len(suf) && strings.HasPrefix(name, pre) && strings.HasSuffix(name, suf) {
+			return true
+		}
+	}
+	return false
+}
+
+// Leftovers lists the temporary files a backup or restore killed mid-write
+// left in the set's folders (the backup folder and the store's folder),
+// sorted by path: regular files with a BackupTemp or RestoreTemp name last
+// modified more than TempMargin before now. A temporary file in a folder
+// given to `backup --out` is not in the set.
+func (s Set) Leftovers(now time.Time) ([]Copy, error) {
+	var out []Copy
+	dirs := []string{filepath.Dir(s.DBPath)}
+	if s.BackupDir != "" && filepath.Clean(s.BackupDir) != dirs[0] {
+		dirs = append(dirs, s.BackupDir)
+	}
+	for _, dir := range dirs {
+		if err := list(&out, dir, isTempName); err != nil {
+			return nil, err
+		}
+	}
+	kept := out[:0]
+	for _, c := range out {
+		if now.Sub(c.At) > TempMargin {
+			kept = append(kept, c)
+		}
+	}
+	sort.Slice(kept, func(i, j int) bool { return kept[i].Path < kept[j].Path })
+	return kept, nil
 }
 
 // list appends the regular files in dir whose names match. A missing dir

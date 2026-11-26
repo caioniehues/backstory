@@ -36,6 +36,18 @@ func joinReasons(reasons, more string) string {
 	return strings.Join(all, "; ")
 }
 
+// closerNeighbour is the budget's Neighbour tier, after direct hits and
+// edge-reached items (outranks): it reports whether a reaches a Neighbour
+// closer to its seed than b does. A Neighbour outranks anything that is
+// neither.
+func closerNeighbour(a, b *graph.Reached) bool {
+	aNeighbour, bNeighbour := a.Via == graph.ViaNeighbour, b.Via == graph.ViaNeighbour
+	if aNeighbour && bNeighbour {
+		return a.Similarity > b.Similarity
+	}
+	return aNeighbour && !bNeighbour
+}
+
 // neighbourLabel is how a Neighbour was reached, e.g. "Neighbour of
 // `a1b2c3d4` (0.82)": the seed it is close to and the cosine similarity.
 func neighbourLabel(r *graph.Reached) string {

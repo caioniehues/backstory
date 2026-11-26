@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/RidgetopAi/backstory/internal/block"
 	"github.com/RidgetopAi/backstory/internal/graph"
 	"github.com/RidgetopAi/backstory/internal/search"
 	"github.com/RidgetopAi/backstory/internal/store"
@@ -179,5 +180,52 @@ func TestBuildTextAnchorNeighboursComeFromItsLocationScope(t *testing.T) {
 	}
 	if got := itemIDs(res.Items); strings.Join(got, ",") != homed+","+hit {
 		t.Errorf("items = %v, want [%s %s] (not %s)", got, homed, hit, elsewhere)
+	}
+}
+
+// The budget ranks Neighbours after edge-reached items, closer first, and
+// still renders the survivors newest first by sequence.
+func TestBuildBudgetRanksNeighboursAfterEdgesByCloseness(t *testing.T) {
+	st := newTestStore(t)
+	mustUpsertProject(t, st, "proj-a")
+	sid := mustStartSession(t, st, "proj-a")
+
+	root := mustInsertRecord(t, st, sid, "proj-a", store.KindDecision, "the anchor")
+	linked := mustInsertRecord(t, st, sid, "proj-a", store.KindNote, "informed by the anchor, and longer than either Neighbour")
+	closer := mustInsertRecord(t, st, sid, "proj-a", store.KindNote, "the closer one")
+	farther := mustInsertRecord(t, st, sid, "proj-a", store.KindNote, "the farther one")
+	mustLinkEdge(t, st, root, linked, store.EdgeInforms, sid)
+	fake := &neighbourSearcher{neighbours: map[string][]search.Hit{root: {vectorHit(farther, 0.6), vectorHit(closer, 0.9)}}}
+
+	whole, err := Build(st, fake, RecordAnchor(root), AltitudeSummary, testBudget, nil)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if got, want := itemIDs(whole.Items), []string{farther, closer, linked, root}; strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("unbudgeted items = %v, want %v", got, want)
+	}
+	rendering := func(ids ...string) string {
+		parts := make([]string, len(ids))
+		for i, id := range ids {
+			parts[i] = renderItem(itemByID(t, whole.Items, id), AltitudeSummary)
+		}
+		return strings.Join(parts, "\n\n")
+	}
+
+	for _, survivors := range [][]string{
+		{closer, linked, root}, // the farther Neighbour, the newest item, is cut first
+		{linked, root},         // then the closer one, before the edge-reached item
+	} {
+		want := rendering(survivors...)
+		res, err := Build(st, fake, RecordAnchor(root), AltitudeSummary, block.EstimateTokens(want), nil)
+		if err != nil {
+			t.Fatalf("Build: %v", err)
+		}
+		if got := itemIDs(res.Items); strings.Join(got, ",") != strings.Join(survivors, ",") {
+			t.Errorf("budget %d: items = %v, want %v", block.EstimateTokens(want), got, survivors)
+		}
+		if res.Rendered != want {
+			t.Errorf("budget %d: rendered\n%s\nwant\n%s", block.EstimateTokens(want), res.Rendered, want)
+		}
 	}
 }

@@ -608,8 +608,9 @@ func annotateWith(st *store.Store, rec store.Record, workspaces []string, hs *ha
 // fit renders items at altitude, keeping only as many as fit budgetTokens
 // (block.EstimateTokens, the same estimator the SessionStart block budgets
 // against). Survivors are picked by priority (outranks: direct hits, then
-// edge-reached items by fewest hops, each tier in the given order) and
-// rendered in the given order, which is sequence order (#32). It adds them
+// edge-reached items by fewest hops, then Neighbours by closeness, ties in
+// the given order) and rendered in the given order, which is sequence
+// order (#32). It adds them
 // one at a time, re-rendering the kept set, and stops before the first
 // that would push the estimate over budget, so a lower-priority item never
 // pushes out a higher one, Result.Rendered's own estimate is always <=
@@ -657,7 +658,8 @@ func fit(items []Item, altitude Altitude, budgetTokens int) Result {
 
 // outranks reports whether an item reached by a goes into the budget
 // before one reached by b: a direct hit (nil) first, then an edge-reached
-// item, fewer hops first. Anything else comes after those.
+// item, fewer hops first, then a Neighbour, closer first (#32). Anything
+// else comes after those.
 func outranks(a, b *graph.Reached) bool {
 	if (a == nil) != (b == nil) {
 		return a == nil
@@ -669,7 +671,10 @@ func outranks(a, b *graph.Reached) bool {
 	if aEdge && bEdge {
 		return a.Hops < b.Hops
 	}
-	return aEdge && !bEdge
+	if aEdge != bEdge {
+		return aEdge
+	}
+	return closerNeighbour(a, b)
 }
 
 // joinKept joins the kept lines, in order, with sep.

@@ -7,20 +7,20 @@ import (
 	"math"
 )
 
-// UpsertRecordEmbedding stores vec as recordID's vector under model (the
-// embedding fingerprint), replacing any vector the Record already has. It is
+// UpsertRecordEmbedding stores vec as recordID's vector under fingerprint (the
+// record_embeddings.model value), replacing any vector the Record already has. It is
 // one conditional statement: nothing is written unless the Record exists and
 // is not Tombstoned, so an embedding that finishes after its Record was
 // forgotten can't bring it back (ADR-0003). written reports whether a row was
 // stored. The vector is stored as little-endian float32 × len(vec).
-func (s *Store) UpsertRecordEmbedding(recordID, model string, vec []float32) (written bool, err error) {
+func (s *Store) UpsertRecordEmbedding(recordID, fingerprint string, vec []float32) (written bool, err error) {
 	if len(vec) == 0 {
 		return false, fmt.Errorf("store: upsert vector for %s: empty vector", recordID)
 	}
 	res, err := s.db.Exec(`INSERT INTO record_embeddings (record_id, model, dim, vec)
 		SELECT id, ?, ?, ? FROM records WHERE id = ? AND tombstoned_at IS NULL
 		ON CONFLICT(record_id) DO UPDATE SET model = excluded.model, dim = excluded.dim, vec = excluded.vec`,
-		model, len(vec), encodeVector(vec), recordID)
+		fingerprint, len(vec), encodeVector(vec), recordID)
 	if err != nil {
 		return false, fmt.Errorf("store: upsert vector for %s: %w", recordID, err)
 	}

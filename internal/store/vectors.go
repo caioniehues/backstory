@@ -34,13 +34,13 @@ type VectorScan struct {
 }
 
 // NearestVectors is the filtered brute-force nearest-vector scan: it reads
-// every vector stored under model with len(query) dimensions for the
+// every vector stored under fingerprint with len(query) dimensions for the
 // Records under f (Tombstoned Records always excluded), and returns the
 // f.Limit most cosine-similar to query, ties newest first. The filter is
 // applied before ranking, so a narrow filter never comes back short. Vectors
 // of another model or dimension are never compared. Nothing is cached: every
 // call reads SQLite, so forgetting a Record needs no cache eviction.
-func (s *Store) NearestVectors(model string, query []float32, f SearchFilter) (VectorScan, error) {
+func (s *Store) NearestVectors(fingerprint string, query []float32, f SearchFilter) (VectorScan, error) {
 	if f.Limit <= 0 || len(query) == 0 {
 		return VectorScan{}, nil
 	}
@@ -53,7 +53,7 @@ func (s *Store) NearestVectors(model string, query []float32, f SearchFilter) (V
 		return VectorScan{}, nil
 	}
 
-	scanArgs := append([]any{model, len(query)}, args...)
+	scanArgs := append([]any{fingerprint, len(query)}, args...)
 	//nolint:gosec // where is assembled from fixed fragments and "?" placeholders; every value is bound
 	rows, err := s.db.Query(`SELECT r.id, r.rowid, e.vec FROM record_embeddings e
 		JOIN records r ON r.id = e.record_id
@@ -104,7 +104,7 @@ func (s *Store) NearestVectors(model string, query []float32, f SearchFilter) (V
 		scan.Hits = append(scan.Hits, all[i].hit)
 	}
 
-	countArgs := append(append([]any{}, args...), embeddedKindsJSON(), model, len(query))
+	countArgs := append(append([]any{}, args...), embeddedKindsJSON(), fingerprint, len(query))
 	//nolint:gosec // where is assembled from fixed fragments and "?" placeholders; every value is bound
 	if err := s.db.QueryRow(`SELECT COUNT(*) FROM records r
 		WHERE `+where+` AND r.kind IN (SELECT value FROM json_each(?))
@@ -115,13 +115,13 @@ func (s *Store) NearestVectors(model string, query []float32, f SearchFilter) (V
 	return scan, nil
 }
 
-// RecordVector returns the vector stored for recordID under model, ok false
+// RecordVector returns the vector stored for recordID under fingerprint, ok false
 // when the Record has none for that fingerprint (or is unknown or
 // Tombstoned). A Record query uses it, so nothing is re-embedded.
-func (s *Store) RecordVector(recordID, model string) (vec []float32, ok bool, err error) {
+func (s *Store) RecordVector(recordID, fingerprint string) (vec []float32, ok bool, err error) {
 	var blob []byte
 	err = s.db.QueryRow(`SELECT e.vec FROM record_embeddings e JOIN records r ON r.id = e.record_id
-		WHERE e.record_id = ? AND e.model = ? AND r.tombstoned_at IS NULL`, recordID, model).Scan(&blob)
+		WHERE e.record_id = ? AND e.model = ? AND r.tombstoned_at IS NULL`, recordID, fingerprint).Scan(&blob)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, false, nil
 	}

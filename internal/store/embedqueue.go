@@ -38,11 +38,11 @@ func embeddedKindsJSON() string {
 	return jsonArray(kinds)
 }
 
-// EmbedQueue returns up to limit Records that have no vector for model (the
-// embedding fingerprint) yet, newest first, leaving out the ids in exclude
+// EmbedQueue returns up to limit Records that have no vector for
+// fingerprint yet, newest first, leaving out the ids in exclude
 // (the drain's skipped Records). A model change puts every Record back in
 // the queue; the upsert then replaces each old vector in place.
-func (s *Store) EmbedQueue(model string, limit int, exclude []string) ([]QueuedRecord, error) {
+func (s *Store) EmbedQueue(fingerprint string, limit int, exclude []string) ([]QueuedRecord, error) {
 	if limit <= 0 {
 		return nil, nil
 	}
@@ -52,7 +52,7 @@ func (s *Store) EmbedQueue(model string, limit int, exclude []string) ([]QueuedR
 	rows, err := s.db.Query(`SELECT r.id, r.text, r.kind, COALESCE(r.next, '') FROM records r
 		WHERE `+embedQueueWhere+` AND r.id NOT IN (SELECT value FROM json_each(?))
 		ORDER BY r.rowid DESC LIMIT ?`,
-		embeddedKindsJSON(), model, jsonArray(exclude), limit)
+		embeddedKindsJSON(), fingerprint, jsonArray(exclude), limit)
 	if err != nil {
 		return nil, fmt.Errorf("store: embed queue: %w", err)
 	}
@@ -76,16 +76,16 @@ func (s *Store) EmbedQueue(model string, limit int, exclude []string) ([]QueuedR
 }
 
 // EmbedCounts counts the Records of the EmbeddedKinds (not Tombstoned) with
-// and without a vector for model.
-func (s *Store) EmbedCounts(model string) (EmbedCounts, error) {
+// and without a vector for fingerprint.
+func (s *Store) EmbedCounts(fingerprint string) (EmbedCounts, error) {
 	var c EmbedCounts
 	if err := s.db.QueryRow(`SELECT COUNT(*) FROM records r WHERE `+embedQueueWhere,
-		embeddedKindsJSON(), model).Scan(&c.Queued); err != nil {
+		embeddedKindsJSON(), fingerprint).Scan(&c.Queued); err != nil {
 		return EmbedCounts{}, fmt.Errorf("store: embed counts: %w", err)
 	}
 	if err := s.db.QueryRow(`SELECT COUNT(*) FROM records r JOIN record_embeddings e ON e.record_id = r.id
 		WHERE r.kind IN (SELECT value FROM json_each(?)) AND r.tombstoned_at IS NULL AND e.model = ?`,
-		embeddedKindsJSON(), model).Scan(&c.Embedded); err != nil {
+		embeddedKindsJSON(), fingerprint).Scan(&c.Embedded); err != nil {
 		return EmbedCounts{}, fmt.Errorf("store: embed counts: %w", err)
 	}
 	return c, nil

@@ -66,7 +66,7 @@ func link(t *testing.T, client *store.Store, clientID store.Identity, server *st
 	rep, err := bsync.Run(client, clientID, from, io.TeeReader(s2cR, &received), c2sW, bsync.Options{})
 	_ = c2sW.Close()
 	_, _ = io.Copy(io.Discard, s2cR)
-	<-done
+	<-done //nolint:errcheck // waiting for the server goroutine; callers judge the client's result
 	return rep, received.Bytes(), err
 }
 

@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	hstatus "github.com/RidgetopAi/backstory/internal/handoff"
 	"github.com/RidgetopAi/backstory/internal/project"
 	"github.com/RidgetopAi/backstory/internal/store"
 )
@@ -349,12 +350,16 @@ func TestBuildEmptyAttentionHasNoHeadingOrFillerLine(t *testing.T) {
 	}
 }
 
-// TestFreshnessEvidenceIDsNeverNull: a stale reason with no ids must still
-// serialise evidence_ids as [], never null (PANEL-CONTRACT.md).
+// TestFreshnessEvidenceIDsNeverNull: a stale item whose reasons cite no ids
+// must still serialise evidence_ids as [], never null (PANEL-CONTRACT.md).
 func TestFreshnessEvidenceIDsNeverNull(t *testing.T) {
-	b, err := json.Marshal(freshnessEvidenceIDs(nil))
+	it, err := staleHandoffItem(nil, nil, "k", "label", store.Record{}, hstatus.Status{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := json.Marshal(it.EvidenceIDs)
 	if err != nil || string(b) != "[]" {
-		t.Fatalf("freshnessEvidenceIDs(nil) marshals as %s (err %v), want []", b, err)
+		t.Fatalf("EvidenceIDs marshals as %s (err %v), want []", b, err)
 	}
 }
 

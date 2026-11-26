@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	hstatus "github.com/RidgetopAi/backstory/internal/handoff"
 	"github.com/RidgetopAi/backstory/internal/payload"
 	"github.com/RidgetopAi/backstory/internal/project"
 	"github.com/RidgetopAi/backstory/internal/store"
@@ -204,11 +205,11 @@ type ProjectSummary struct {
 	// when unknown.
 	HandoffAgent string
 	// HandoffStale mirrors whether an AttentionPossiblyStaleHandoff item
-	// exists for this project's handoff — the same store.HandoffFreshness
+	// exists for this project's handoff — the same handoff.Of
 	// call feeds both, so the two can never disagree.
 	HandoffStale bool
 	// HandoffDone and HandoffDoneAt say the human marked the handoff done
-	// (store.HandoffDone) and when; a done handoff is never stale.
+	// (handoff.Of) and when; a done handoff is never stale.
 	HandoffDone   bool
 	HandoffDoneAt time.Time
 }
@@ -452,7 +453,7 @@ func sortWeekGrid(grid []DayProjectStats) {
 
 // buildProject computes one active project's ProjectSummary and every
 // AttentionItem it contributes. Both read the SAME handoff +
-// store.HandoffFreshness call, so the summary's HandoffStale flag and an
+// handoff.Of call, so the summary's HandoffStale flag and an
 // AttentionPossiblyStaleHandoff item can never disagree with each other.
 func buildProject(st *store.Store, projectKey string, since, now time.Time, git project.Git, workspaces []string) (ProjectSummary, []AttentionItem, error) {
 	summary := ProjectSummary{ProjectKey: projectKey}
@@ -508,16 +509,14 @@ func buildProject(st *store.Store, projectKey string, since, now time.Time, git 
 		summary.HandoffNext = handoffNext(handoff)
 		summary.HandoffBranch = handoff.GitBranch
 
-		if summary.HandoffDoneAt, summary.HandoffDone, err = st.HandoffDone(handoff.ID); err != nil {
-			return ProjectSummary{}, nil, err
-		}
-		reasons, err := st.HandoffFreshness(handoff, workspaces)
+		status, err := hstatus.Of(st, handoff, workspaces)
 		if err != nil {
-			return ProjectSummary{}, nil, fmt.Errorf("week: handoff freshness for %s: %w", projectKey, err)
+			return ProjectSummary{}, nil, fmt.Errorf("week: handoff status for %s: %w", projectKey, err)
 		}
-		if len(reasons) > 0 {
+		summary.HandoffDone, summary.HandoffDoneAt = status.Done, status.DoneAt
+		if status.PossiblyStale() {
 			summary.HandoffStale = true
-			item, err := staleHandoffItem(st, git, projectKey, summary.DisplayName, handoff, reasons, workspaces)
+			item, err := staleHandoffItem(st, git, projectKey, summary.DisplayName, handoff, status, workspaces)
 			if err != nil {
 				return ProjectSummary{}, nil, err
 			}
@@ -778,7 +777,7 @@ func buildWeekGrid(st *store.Store, keys []string, since, now time.Time, workspa
 // 5, task 482b2320): a session started at the workspace root itself, whose
 // file-touching events resolve to a repo/folder that never got its own
 // session. Its handoff resolves exactly as projectHandoff's home-scoped
-// branch does (store.LatestHandoffAt), and the same store.HandoffFreshness
+// branch does (store.LatestHandoffAt), and the same handoff.Of
 // call feeds both the summary's HandoffStale flag and any
 // AttentionPossiblyStaleHandoff item, so the two can never disagree — the
 // same invariant buildProject's own handoff handling keeps. Unlike
@@ -822,16 +821,14 @@ func buildHomeLabelProject(st *store.Store, since, now time.Time, loc store.Acti
 		summary.HandoffNext = handoffNext(handoff)
 		summary.HandoffBranch = handoff.GitBranch
 
-		if summary.HandoffDoneAt, summary.HandoffDone, err = st.HandoffDone(handoff.ID); err != nil {
-			return ProjectSummary{}, nil, err
-		}
-		reasons, err := st.HandoffFreshness(handoff, workspaces)
+		status, err := hstatus.Of(st, handoff, workspaces)
 		if err != nil {
-			return ProjectSummary{}, nil, fmt.Errorf("week: handoff freshness for label %s: %w", loc.Label, err)
+			return ProjectSummary{}, nil, fmt.Errorf("week: handoff status for label %s: %w", loc.Label, err)
 		}
-		if len(reasons) > 0 {
+		summary.HandoffDone, summary.HandoffDoneAt = status.Done, status.DoneAt
+		if status.PossiblyStale() {
 			summary.HandoffStale = true
-			item, err := staleHandoffItem(st, git, summary.ProjectKey, summary.DisplayName, handoff, reasons, workspaces)
+			item, err := staleHandoffItem(st, git, summary.ProjectKey, summary.DisplayName, handoff, status, workspaces)
 			if err != nil {
 				return ProjectSummary{}, nil, err
 			}
@@ -1037,8 +1034,8 @@ const failureTextMaxRunes = 60
 // staleHandoffItem builds the AttentionPossiblyStaleHandoff item for
 // handoffID: its reason leads with the project label (so two distinct
 // handoffs are told apart) and says what failed instead of a bare kind slug.
-func staleHandoffItem(st *store.Store, git project.Git, projectKey, label string, handoff store.Record, reasons []store.FreshnessReason, workspaces []string) (AttentionItem, error) {
-	detail, err := staleReasons(st, git, reasons, workspaces)
+func staleHandoffItem(st *store.Store, git project.Git, projectKey, label string, handoff store.Record, status hstatus.Status, workspaces []string) (AttentionItem, error) {
+	detail, err := staleReasons(st, git, status.Reasons, workspaces)
 	if err != nil {
 		return AttentionItem{}, fmt.Errorf("week: stale reasons for %s: %w", handoff.ID, err)
 	}
@@ -1056,8 +1053,8 @@ func staleHandoffItem(st *store.Store, git project.Git, projectKey, label string
 		HandoffTime:    handoff.TS,
 		HandoffSummary: strings.TrimSpace(firstLine(handoff.Text)),
 		Reasons:        detail,
-		Reason:         label + ": handoff possibly stale — " + freshnessReasonSummary(reasons),
-		EvidenceIDs:    freshnessEvidenceIDs(reasons),
+		Reason:         label + ": handoff possibly stale — " + freshnessReasonSummary(status.Reasons),
+		EvidenceIDs:    status.Evidence(),
 	}, nil
 }
 
@@ -1222,19 +1219,6 @@ func failureClause(failures []store.FailureDetail) string {
 		out += fmt.Sprintf(" (+%d more)", len(failures)-1)
 	}
 	return out
-}
-
-// freshnessEvidenceIDs flattens every reason's record and event ids into
-// one mixed list, the same shape block.staleReasonClause's idList and
-// recall.staleReasonSummary's ids both already use for a freshness
-// reason's evidence.
-func freshnessEvidenceIDs(reasons []store.FreshnessReason) []string {
-	ids := []string{} // never null in --json (PANEL-CONTRACT.md)
-	for _, r := range reasons {
-		ids = append(ids, r.RecordIDs...)
-		ids = append(ids, intIDs(r.EventIDs)...)
-	}
-	return ids
 }
 
 func intIDs(ids []int64) []string {

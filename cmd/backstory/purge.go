@@ -7,6 +7,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/RidgetopAi/backstory/internal/forgetting"
 	"github.com/RidgetopAi/backstory/internal/project"
 	"github.com/RidgetopAi/backstory/internal/store"
 	"github.com/RidgetopAi/backstory/internal/week"
@@ -109,9 +110,9 @@ func runPurge(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 	// A purge that matches nothing leaves every backup as it was.
 	nothing := preview.Sessions == 0 && preview.Events == 0 && preview.Records == 0
-	var backups []purgeBackup
+	var backups []forgetting.Copy
 	if !nothing {
-		if backups, err = listPurgeBackups(dbPath, backupDir); err != nil {
+		if backups, err = purgeBackups(dbPath, backupDir); err != nil {
 			_, _ = fmt.Fprintln(stderr, "backstory purge:", err)
 			return 1
 		}

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/RidgetopAi/backstory/internal/forgetting"
 	"github.com/RidgetopAi/backstory/internal/project"
 	"github.com/RidgetopAi/backstory/internal/store"
 )
@@ -77,7 +78,7 @@ func seedPurgeBackups(t *testing.T) purgeBackupFixture {
 		return dest
 	}
 	for _, d := range []time.Duration{0, 24 * time.Hour} {
-		fx.auto = append(fx.auto, mk(filepath.Join(fx.backupDir, store.AutoBackupName(autoT0.Add(d)))))
+		fx.auto = append(fx.auto, mk(filepath.Join(fx.backupDir, forgetting.AutoBackupName(autoT0.Add(d)))))
 	}
 	fx.manual = mk(filepath.Join(fx.backupDir, "backstory-20260302T090000Z.db"))
 	fx.preCopy = mk(dbPath + ".pre-restore-20260303T090000Z")
@@ -141,13 +142,13 @@ func TestPurgeDeletesBackupsHoldingTextThenTakesFreshOne(t *testing.T) {
 	}
 	// exactly one new backup in backupDir, without the marker
 	var fresh []string
-	ents, err := os.ReadDir(fx.backupDir)
+	copies, err := forgetting.Set{DBPath: fx.dbPath, BackupDir: fx.backupDir}.Copies()
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, e := range ents {
-		if backupFileName.MatchString(e.Name()) && e.Name() != filepath.Base(fx.link) {
-			fresh = append(fresh, filepath.Join(fx.backupDir, e.Name()))
+	for _, c := range copies {
+		if filepath.Dir(c.Path) == fx.backupDir {
+			fresh = append(fresh, c.Path)
 		}
 	}
 	if len(fresh) != 1 {
@@ -209,6 +210,30 @@ func TestPurgeDryRunListsBackupsAndDeletesNothing(t *testing.T) {
 	}
 	if n := countRows(t, fx.dbPath, `SELECT COUNT(*) FROM timeline_events WHERE payload LIKE ?`, "%"+purgeMarker+"%"); n != 1 {
 		t.Errorf("dry-run changed the store (marker events = %d)", n)
+	}
+}
+
+// The next pre-copy, for a reason no writer uses yet, is listed by the dry
+// run and deleted by the purge without purge knowing the reason.
+func TestPurgeReachesAPreCopyForAnyReason(t *testing.T) {
+	fx := seedPurgeBackups(t)
+	st, err := openStore(fx.dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := forgetting.PreCopyPath(fx.dbPath, forgetting.Reason("next"), autoT0)
+	if _, err := st.Backup(next, false); err != nil {
+		t.Fatal(err)
+	}
+	_ = st.Close()
+	if code, out, errs := runAutoCLI(t, "purge", "--session", fx.f.a, "--dry-run"); code != 0 || !strings.Contains(out, next) {
+		t.Errorf("dry-run (exit %d, %s) does not list %s:\n%s", code, errs, next, out)
+	}
+	if code, out, errs := runAutoCLI(t, "purge", "--session", fx.f.a, "--yes"); code != 0 {
+		t.Fatalf("exit %d out=%s err=%s", code, out, errs)
+	}
+	if exists(next) {
+		t.Errorf("%s survived the purge", next)
 	}
 }
 

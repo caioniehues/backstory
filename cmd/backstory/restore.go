@@ -12,16 +12,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RidgetopAi/backstory/internal/forgetting"
 	"github.com/RidgetopAi/backstory/internal/store"
 )
 
 // restoreUnits are the systemd user units restore stops while it swaps the
 // store, in stop order (ops/install.sh names them); they restart in reverse.
 var restoreUnits = []string{"backstory-sync.timer", "backstory-sync.service", "backstory.service"}
-
-// preRestoreInfix names the copy of the replaced store, beside the store:
-// backstory.db.pre-restore-<UTC ts>. Restore never deletes it.
-const preRestoreInfix = ".pre-restore-"
 
 // restoreFailHook, when set (tests only), is called at the named step of the
 // swap — "rename" before the new file is moved into place, "open" before the
@@ -177,7 +174,7 @@ func runRestore(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 
 	if current != nil {
-		kept = dbPath + preRestoreInfix + time.Now().UTC().Format(backupTimeLayout)
+		kept = forgetting.PreCopyPath(dbPath, forgetting.Restore, time.Now()) // restore never deletes it
 		cur, err := openStore(dbPath)
 		if err != nil {
 			kept = ""

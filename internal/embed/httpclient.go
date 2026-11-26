@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -67,10 +68,15 @@ func unixHTTP(ctx context.Context, sock, method, target string, body []byte) (in
 }
 
 // ctxErr is err, or ctx's own error when ctx ended (the deadline or a
-// cancel is the cause, not the I/O error it produced).
+// cancel is the cause, not the I/O error it produced). The socket's deadline
+// is ctx's, so a socket timeout once that deadline has passed is the missed
+// deadline even if ctx's timer hasn't fired yet (it can lag under load).
 func ctxErr(ctx context.Context, err error) error {
 	if ctx.Err() != nil {
 		return fmt.Errorf("query server: %w", ctx.Err())
+	}
+	if dl, ok := ctx.Deadline(); ok && errors.Is(err, os.ErrDeadlineExceeded) && !time.Now().Before(dl) {
+		return fmt.Errorf("query server: %w", context.DeadlineExceeded)
 	}
 	return fmt.Errorf("query server: %w", err)
 }

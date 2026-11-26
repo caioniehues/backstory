@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"time"
 	"unicode"
 )
 
@@ -143,17 +142,13 @@ func (s *Store) handoffsByNext(terms []string, where string, args []any) ([]stri
 	return ids, nil
 }
 
-// notExpiredDraft is the condition over records r that r is not an expired
-// Draft: an inferred Record whose expires_at is at or before the bound
-// time. An expired Draft is a stale guess, never a search result.
-const notExpiredDraft = "NOT (r.tier = 'inferred' AND r.expires_at IS NOT NULL AND r.expires_at <= ?)"
-
 // searchWhere is f as a condition over records r, with its bound args. ok is
 // false when f can match nothing (a scope with neither a repo key nor a
-// session). Tombstoned Records and expired Drafts are always excluded.
+// session). Tombstoned Records and expired Drafts (ExpiredDraft) are always
+// excluded.
 func (s *Store) searchWhere(f SearchFilter) (where string, args []any, ok bool) {
 	conds := []string{"r.tombstoned_at IS NULL", notExpiredDraft}
-	args = append(args, tsToNanos(time.Now()))
+	args = append(args, tsToNanos(s.now()))
 	if f.Scope != nil {
 		var either []string
 		if f.Scope.RepoKey != "" {

@@ -104,12 +104,8 @@ func (b *Batch) Embed(ctx context.Context, docs []string) ([][]float32, error) {
 		stdin.WriteString(t)
 	}
 
-	args := []string{"-m", b.setup.Model, "-dev", b.device.Arg}
-	if b.device.Backend != cpuDevice.Backend {
-		args = append(args, "-ngl", "all")
-	}
 	ctxTokens := strconv.Itoa(ContextTokens)
-	args = append(args, "-fit", "off", "-b", ctxTokens, "-ub", ctxTokens, "-lv", logVerbosity,
+	args := append(runtimeArgs(b.setup.Model, b.device), "-b", ctxTokens, "-ub", ctxTokens, "-lv", logVerbosity,
 		"--embd-output-format", "json", "--embd-separator", sep, "-f", "/dev/stdin")
 	var stdout, stderr bytes.Buffer
 	cmd := exec.CommandContext(ctx, b.setup.Runtime, args...) //nolint:gosec // runtime and model are the Human's chosen files; no Record text in args
@@ -122,6 +118,17 @@ func (b *Batch) Embed(ctx context.Context, docs []string) ([][]float32, error) {
 		return nil, err
 	}
 	return parseVectors(stdout.Bytes(), len(docs))
+}
+
+// runtimeArgs starts every llama.cpp command line the batch embedder and
+// the query server run: the model, the resolved device, every layer on it
+// unless it is the CPU, and -fit off.
+func runtimeArgs(model string, dev Device) []string {
+	args := []string{"-m", model, "-dev", dev.Arg}
+	if dev.Backend != cpuDevice.Backend {
+		args = append(args, "-ngl", "all")
+	}
+	return append(args, "-fit", "off")
 }
 
 // checkDevice checks from the run's log that it used b's device.

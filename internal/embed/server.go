@@ -322,11 +322,7 @@ func (p *serverProc) stop() {
 // private socket, one slot, no prompt cache, no slots endpoint, no logs and
 // no network. There is never a --slot-save-path.
 func serverArgs(s Setup, dev Device, sock string) []string {
-	args := []string{"-m", s.Model, "-dev", dev.Arg}
-	if dev.Backend != cpuDevice.Backend {
-		args = append(args, "-ngl", "all")
-	}
-	return append(args, "-fit", "off", "--embedding", "--host", sock, "--no-webui", "--no-slots",
+	return append(runtimeArgs(s.Model, dev), "--embedding", "--host", sock, "--no-webui", "--no-slots",
 		"-np", "1", "--cache-ram", "0", "--log-disable", "--offline")
 }
 

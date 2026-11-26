@@ -8,7 +8,7 @@ GO      ?= go
 # with qt5-declarative installed is Qt 5's and won't load the panel.
 QMLTESTRUNNER ?= $(firstword $(wildcard /usr/lib/qt6/bin/qmltestrunner /usr/lib64/qt6/bin/qmltestrunner) qmltestrunner)
 
-.PHONY: check-go install uninstall build fmt-check vet lint test integration panel-qml-test check hygiene-check vulncheck release-check clean
+.PHONY: check-go install uninstall build fmt-check vet lint test integration gpu-proof panel-qml-test check hygiene-check vulncheck release-check clean
 
 build:
 	CGO_ENABLED=0 $(GO) build -trimpath -ldflags "-s -w -X $(MODULE)/internal/version.Version=$(VERSION)" -o $(BIN) ./cmd/backstory
@@ -50,6 +50,15 @@ test:
 
 integration:
 	$(GO) test -race -count=1 -tags backstorytest,integration ./...
+
+# gpu-proof is the hand-run GPU proof (#44): the embedding path against the
+# real llama.cpp + Vulkan runtime and EmbeddingGemma 2 on the RX 7800 XT, on a
+# throwaway store, HOME and daemon. It needs the card, so it is not part of
+# check. BACKSTORY_GPU_STORE=PATH runs it on a read-only copy of a real store
+# and measures the cosine floor; cmd/backstory/gpu_proof_test.go lists the
+# other knobs.
+gpu-proof:
+	$(GO) test -count=1 -v -tags backstorytest,gpu -run '^TestGPUProof$$' ./cmd/backstory
 
 # panel-qml-test is the QML half of task 4fe02e30's DONE WHEN clause (1):
 # it loads every panel/*.qml against panel/qmltest/stubs's stand-ins for

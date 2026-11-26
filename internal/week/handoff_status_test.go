@@ -2,6 +2,7 @@ package week
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -50,5 +51,33 @@ func TestClearedFailureIsNotAPossiblyStaleHandoff(t *testing.T) {
 	run("t2", 0)
 	if row, stale := build(); stale || row.HandoffStale {
 		t.Fatalf("cleared failure: stale item %v, HandoffStale %v; want neither", stale, row.HandoffStale)
+	}
+}
+
+// The summary is handoff's short label and each detailed reason its long
+// line: This Week words no reason itself (#2).
+func TestStaleHandoffReasonsAreHandoffsWording(t *testing.T) {
+	st := openTestStore(t)
+	key, _, outID := seedHandoffWithLaterRecord(t, st, "worded", store.KindOutcome)
+	use, _ := json.Marshal(payload.ToolUse{ToolUseID: "e1", Name: "Edit", Path: "main.go"})
+	appendEvent(t, st, store.Event{TS: fixtureNow.Add(-time.Hour), Kind: payload.KindToolUse, SessionID: "sess-worded", Source: "posttooluse", Payload: string(use)})
+
+	res, err := Build(Params{Store: st, Now: fixtureNow})
+	if err != nil {
+		t.Fatal(err)
+	}
+	it, ok := staleItemFor(res, key)
+	if !ok {
+		t.Fatalf("no stale item for %s", key)
+	}
+	if want := "worded: handoff possibly stale — a later record shares a path it names; a later edit to a file it names"; it.Reason != want {
+		t.Errorf("Reason =\n  %q\nwant\n  %q", it.Reason, want)
+	}
+	var texts []string
+	for _, r := range it.Reasons {
+		texts = append(texts, r.Text)
+	}
+	if want := []string{"outcome " + outID[:8] + ": RESOLVED it", "a later edit to a file the handoff names"}; strings.Join(texts, "|") != strings.Join(want, "|") {
+		t.Errorf("Reasons[].Text = %q, want %q", texts, want)
 	}
 }

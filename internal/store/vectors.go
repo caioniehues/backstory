@@ -104,11 +104,10 @@ func (s *Store) NearestVectors(fingerprint string, query []float32, f SearchFilt
 		scan.Hits = append(scan.Hits, all[i].hit)
 	}
 
-	countArgs := append(append([]any{}, args...), embeddedKindsJSON(), fingerprint, len(query))
-	//nolint:gosec // where is assembled from fixed fragments and "?" placeholders; every value is bound
-	if err := s.db.QueryRow(`SELECT COUNT(*) FROM records r
-		WHERE `+where+` AND r.kind IN (SELECT value FROM json_each(?))
-		AND NOT EXISTS (SELECT 1 FROM record_embeddings e WHERE e.record_id = r.id AND e.model = ? AND e.dim = ?)`,
+	waiting, waitingArgs := unembedded(fingerprint, len(query))
+	countArgs := append(append([]any{}, args...), waitingArgs...)
+	//nolint:gosec // where and waiting are assembled from fixed fragments and "?" placeholders; every value is bound
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM records r WHERE `+where+` AND `+waiting,
 		countArgs...).Scan(&scan.Unembedded); err != nil {
 		return VectorScan{}, fmt.Errorf("store: nearest vectors: count unembedded: %w", err)
 	}

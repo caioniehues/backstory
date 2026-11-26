@@ -22,12 +22,33 @@ type EmbedCounts struct {
 	Queued int
 }
 
-// embedQueueWhere is the queue: a Record of an EmbeddedKinds kind, not
-// Tombstoned, with no vector for the fingerprint bound to its second
-// placeholder (the first binds the kinds). Superseded Records, Drafts and
-// Records from Peers are all in it.
-const embedQueueWhere = `r.kind IN (SELECT value FROM json_each(?)) AND r.tombstoned_at IS NULL
-	AND NOT EXISTS (SELECT 1 FROM record_embeddings e WHERE e.record_id = r.id AND e.model = ?)`
+// embeddedKind is the condition over records r that r is of an
+// EmbeddedKinds kind. It binds embeddedKindsJSON().
+const embeddedKind = "r.kind IN (SELECT value FROM json_each(?))"
+
+// unembedded is the condition over records r that r is of an EmbeddedKinds
+// kind with no vector for fingerprint (of dim dimensions, when dim > 0),
+// with its args in placeholder order. It is the one definition of "waiting
+// for a vector" the queue, its counts and the vector scan's Unembedded
+// share. It says nothing about Tombstones: each caller excludes them.
+func unembedded(fingerprint string, dim int) (cond string, args []any) {
+	cond = embeddedKind + " AND NOT EXISTS (SELECT 1 FROM record_embeddings e WHERE e.record_id = r.id AND e.model = ?"
+	args = []any{embeddedKindsJSON(), fingerprint}
+	if dim > 0 {
+		cond += " AND e.dim = ?"
+		args = append(args, dim)
+	}
+	return cond + ")", args
+}
+
+// embedQueue is the queue as a condition over records r, with its args: a
+// Record of an EmbeddedKinds kind, not Tombstoned, with no vector for
+// fingerprint. Superseded Records, Drafts and Records from Peers are all in
+// it.
+func embedQueue(fingerprint string) (cond string, args []any) {
+	cond, args = unembedded(fingerprint, 0)
+	return "r.tombstoned_at IS NULL AND " + cond, args
+}
 
 // embeddedKindsJSON is EmbeddedKinds as a JSON array for json_each.
 func embeddedKindsJSON() string {
@@ -49,10 +70,12 @@ func (s *Store) EmbedQueue(fingerprint string, limit int, exclude []string) ([]Q
 	if exclude == nil {
 		exclude = []string{}
 	}
+	queue, args := embedQueue(fingerprint)
+	//nolint:gosec // queue is assembled from fixed fragments and "?" placeholders; every value is bound
 	rows, err := s.db.Query(`SELECT r.id, r.text, r.kind, COALESCE(r.next, '') FROM records r
-		WHERE `+embedQueueWhere+` AND r.id NOT IN (SELECT value FROM json_each(?))
+		WHERE `+queue+` AND r.id NOT IN (SELECT value FROM json_each(?))
 		ORDER BY r.rowid DESC LIMIT ?`,
-		embeddedKindsJSON(), fingerprint, jsonArray(exclude), limit)
+		append(args, jsonArray(exclude), limit)...)
 	if err != nil {
 		return nil, fmt.Errorf("store: embed queue: %w", err)
 	}
@@ -79,12 +102,13 @@ func (s *Store) EmbedQueue(fingerprint string, limit int, exclude []string) ([]Q
 // and without a vector for fingerprint.
 func (s *Store) EmbedCounts(fingerprint string) (EmbedCounts, error) {
 	var c EmbedCounts
-	if err := s.db.QueryRow(`SELECT COUNT(*) FROM records r WHERE `+embedQueueWhere,
-		embeddedKindsJSON(), fingerprint).Scan(&c.Queued); err != nil {
+	queue, args := embedQueue(fingerprint)
+	//nolint:gosec // queue is assembled from fixed fragments and "?" placeholders; every value is bound
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM records r WHERE `+queue, args...).Scan(&c.Queued); err != nil {
 		return EmbedCounts{}, fmt.Errorf("store: embed counts: %w", err)
 	}
 	if err := s.db.QueryRow(`SELECT COUNT(*) FROM records r JOIN record_embeddings e ON e.record_id = r.id
-		WHERE r.kind IN (SELECT value FROM json_each(?)) AND r.tombstoned_at IS NULL AND e.model = ?`,
+		WHERE `+embeddedKind+` AND r.tombstoned_at IS NULL AND e.model = ?`,
 		embeddedKindsJSON(), fingerprint).Scan(&c.Embedded); err != nil {
 		return EmbedCounts{}, fmt.Errorf("store: embed counts: %w", err)
 	}

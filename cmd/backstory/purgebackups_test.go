@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/RidgetopAi/backstory/internal/project"
 	"github.com/RidgetopAi/backstory/internal/store"
 )
 
@@ -275,4 +276,95 @@ func TestPurgeDryRunGolden(t *testing.T) {
 		lines[i] = dryRunBackupLine.ReplaceAllString(l, "  <date>  <size> bytes")
 	}
 	compareGolden(t, "../purge/dry-run.golden", strings.Join(lines, "\n"))
+}
+
+// noRepoGit answers "not a git working tree" for every dir, so a configured
+// workspace dir resolves to its workspace: key and the sweep has a target.
+type noRepoGit struct{}
+
+func (noRepoGit) Repo(string) (project.Repo, bool)   { return project.Repo{}, false }
+func (noRepoGit) State(string) (project.State, bool) { return project.State{}, false }
+
+// TestPurgeDeletesEveryCopyTheStoreKeepsBesideItself drives every writer of
+// a copy beside the store while it holds purgeMarker (restore, then the
+// sweep, repo-identity and handoff re-home migrations at Open) and purges
+// the marker: none of those copies may survive holding the text. It uses
+// the real writers rather than hand-made names, so a writer whose name purge
+// does not know fails here.
+func TestPurgeDeletesEveryCopyTheStoreKeepsBesideItself(t *testing.T) {
+	f := newRestoreFixture(t)
+	seedBackupStore(t, f.dbPath)
+	st, err := store.Open(f.dbPath, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpsertProject(store.Project{Key: purgeProject, Toplevel: purgeProject, FirstSeen: autoT0}); err != nil {
+		t.Fatal(err)
+	}
+	sid, err := st.StartSession(store.StartSessionParams{Agent: "claude", HarnessSessionID: "h-marker", CWD: purgeProject, ProjectKey: purgeProject, StartedAt: autoT0, Origin: store.OriginBackfilled})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.AppendEvent(store.Event{TS: autoT0, Kind: "tool.use", SessionID: sid, Source: "backfill", Payload: `{"text":"` + purgeMarker + `"}`}); err != nil {
+		t.Fatal(err)
+	}
+	_ = st.Close()
+
+	// restore keeps the replaced store aside.
+	if code, _, errs := f.restore(f.backup("b.db"), "--yes"); code != 0 {
+		t.Fatalf("restore: exit %d: %s", code, errs)
+	}
+
+	// Rows each Open-time migration rewrites, behind a pre-copy.
+	dir := t.TempDir()
+	ws := filepath.Join(dir, "projects")
+	wsKey := "workspace:" + ws
+	repo := filepath.Join(dir, "repo")
+	st, err = store.Open(f.dbPath, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ns := autoT0.UnixNano()
+	for _, q := range []struct {
+		sql  string
+		args []any
+	}{
+		// sweep: a legacy plain-path row for the configured workspace dir.
+		{`INSERT INTO projects (key, toplevel, first_seen) VALUES (?, ?, ?)`, []any{ws, ws, ns}},
+		// identity: a remote-less repo keyed by its toplevel, common dir known.
+		{`INSERT INTO projects (key, git_common_dir, toplevel, first_seen) VALUES (?, ?, ?, ?)`, []any{repo, filepath.Join(repo, ".git"), repo, ns}},
+		// rehome: a handoff homed on a workspace key by a repo-keyed session.
+		{`INSERT INTO projects (key, toplevel, first_seen) VALUES (?, ?, ?)`, []any{wsKey, ws, ns}},
+		{`INSERT INTO sessions (id, agent, cwd, project_key, started_at, origin) VALUES ('s-repo', 'claude', ?, ?, ?, 'live')`, []any{purgeProject, purgeProject, ns}},
+		{`INSERT INTO records (id, ts, kind, tier, text, about, session_id, project_key, evidence, event_cursor)
+			VALUES ('h-ws', ?, 'handoff', 'agent-declared', 'handoff', '[]', 's-repo', ?, '[]', 0)`, []any{ns, wsKey}},
+	} {
+		if _, err := st.DB().Exec(q.sql, q.args...); err != nil {
+			t.Fatalf("%s: %v", q.sql, err)
+		}
+	}
+	_ = st.Close()
+	st, err = store.Open(f.dbPath, []string{ws}, noRepoGit{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = st.Close()
+
+	copies, _ := filepath.Glob(f.dbPath + ".pre-*")
+	for _, infix := range []string{".pre-restore-", ".pre-sweep-", ".pre-identity-", ".pre-rehome-"} {
+		m, _ := filepath.Glob(f.dbPath + infix + "*")
+		if len(m) != 1 || !fileHas(t, m[0], purgeMarker) {
+			t.Fatalf("fixture: want one %s copy holding the marker, have %v (all copies: %v)", infix, m, copies)
+		}
+	}
+
+	if code, out, errs := runAutoCLI(t, "purge", "--session", sid, "--yes"); code != 0 {
+		t.Fatalf("purge: exit %d out=%s err=%s", code, out, errs)
+	}
+	left, _ := filepath.Glob(f.dbPath + ".pre-*")
+	for _, p := range left {
+		if fileHas(t, p, purgeMarker) {
+			t.Errorf("%s survived the purge holding the text", p)
+		}
+	}
 }

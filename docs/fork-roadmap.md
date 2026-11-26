@@ -53,14 +53,21 @@ The scope was the most-changed areas of the last ~400 commits. "Suspected" bugs 
 | 12 | One Continue plan (panel) | Worth exploring | Only the focus step is pure; the label is decided twice. |
 | – | Shared Timeline counting; one daemon-client module | Speculative | |
 
-## Sequencing (proposed)
+## Sequencing (settled in [#34](https://github.com/caioniehues/backstory/issues/34#issuecomment-7180799426))
 
-1. **Read-side Handoff logic first: #1, #4, #2.** Dreaming reads Handoffs and staleness and writes inferred Records, so these must agree before a fourth reader arrives.
-2. **Independent, can run in parallel:** #5 (before any Obsidian file export), #6, #7, #8, #3.
-3. **The Search seam, then embeddings** (research ticket: which runtime supports gfx1101 with a CLI or unix socket).
-4. **Dreaming (Phase 5)** on top of 1 and 3.
-5. **The Obsidian plugin, then `graph --json` and the graph view, then graph-aware recall;** live note blocks later.
-6. **Lower priority:** #9–#12.
+Numbers here are GitHub issue numbers; the audit table above numbers its rows one lower.
+
+1. **Search and embeddings (#37):** built. It merges without waiting for the forgetting module (#6), because vectors live inside the DB file and are deleted with the Record.
+2. **Refactors, run as agent work alongside the grillings:**
+   - **Upstream-bug checks first:** #5's staleness bug and #6's Purge pre-copy gap each start with a failing test, on a branch from `upstream/main`.
+   - **One chain:** #2, then #3, then #5, then #4, because all four touch block, week and recall. #4's rule: the block skips a could-not-observe state, as week does.
+   - **In parallel with the chain:** #6 and #7.
+3. **Graph-aware recall:** #32 and #29 grilled together, then the PRD (#33). Gated by #2.
+4. **The Obsidian plugin and graph view:** #28, then #30, then the PRD (#31). The optional file export is gated by #6.
+5. **Dreaming (Phase 5):** #23, #24 and #25, then #35, then the PRD (#26). Gated by #2, #3 and #5.
+6. **Lower priority, gating nothing:** #8–#13, and #1 once #36 lands.
+
+Each build overlaps with grilling the next capability.
 
 ## Open questions for the map
 

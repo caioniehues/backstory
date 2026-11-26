@@ -17,6 +17,7 @@ import (
 	"github.com/RidgetopAi/backstory/internal/payload"
 	"github.com/RidgetopAi/backstory/internal/project"
 	"github.com/RidgetopAi/backstory/internal/store"
+	"github.com/RidgetopAi/backstory/internal/tooluse"
 )
 
 const (
@@ -470,8 +471,9 @@ func sessionStartPayload(lines []rolloutLine) string {
 	return string(b)
 }
 
-// appendToolEvents emits one tool.use per function_call/custom_tool_call
-// item and one tool.result per function_call_output/custom_tool_call_output
+// appendToolEvents emits the tool.use events tooluse.CodexRollout gives each
+// function_call/custom_tool_call item (one per touched path for apply_patch)
+// and one tool.result per function_call_output/custom_tool_call_output
 // item, walking validIdx (already in file order) so rowid order matches
 // file order regardless of each line's own timestamp (SCHEMA.md invariant
 // 10). Every pairing is keyed on the item's own call_id field — read
@@ -498,17 +500,24 @@ func appendToolEvents(st *store.Store, sessionID string, lines []rolloutLine, va
 					continue
 				}
 			}
-			payloadBytes, err := json.Marshal(toolUsePayload(item))
-			if err != nil {
-				return n, err
-			}
-			if appended, err := capture.AppendBackfill(st, store.Event{
-				TS: l.Timestamp, Kind: EventToolUse, SessionID: sessionID,
-				Source: EventSource, Payload: string(payloadBytes),
-			}); err != nil {
-				return n, err
-			} else if appended {
-				n++
+			// One call can be several tool.use events: an apply_patch is
+			// one per touched path, exactly as the live hook records it.
+			for _, tu := range tooluse.CodexRollout(tooluse.CodexRolloutCall{
+				Type: item.Type, CallID: item.CallID, Name: item.Name,
+				Arguments: item.Arguments, Input: item.Input,
+			}) {
+				payloadBytes, err := json.Marshal(tu)
+				if err != nil {
+					return n, err
+				}
+				if appended, err := capture.AppendBackfill(st, store.Event{
+					TS: l.Timestamp, Kind: EventToolUse, SessionID: sessionID,
+					Source: EventSource, Payload: string(payloadBytes),
+				}); err != nil {
+					return n, err
+				} else if appended {
+					n++
+				}
 			}
 		case "function_call_output", "custom_tool_call_output":
 			tr := payload.ToolResult{

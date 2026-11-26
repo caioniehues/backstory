@@ -10,14 +10,13 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
+	hstatus "github.com/RidgetopAi/backstory/internal/handoff"
 	"github.com/RidgetopAi/backstory/internal/ident"
 	"github.com/RidgetopAi/backstory/internal/payload"
 	"github.com/RidgetopAi/backstory/internal/project"
-	"github.com/RidgetopAi/backstory/internal/shellcmd"
 	"github.com/RidgetopAi/backstory/internal/store"
 	bsync "github.com/RidgetopAi/backstory/internal/sync"
 )
@@ -191,19 +190,11 @@ func Render(p Params) (string, error) {
 		return "", fmt.Errorf("block: contradiction count: %w", err)
 	}
 	failure := lastFailure(deltaEvents)
-	var staleReasons []store.FreshnessReason
-	var doneAt time.Time
-	var isDone bool
+	var status hstatus.Status
 	if hasHandoff {
-		doneAt, isDone, err = p.Store.HandoffDone(handoff.ID)
-		if err != nil {
-			return "", fmt.Errorf("block: handoff done: %w", err)
+		if status, err = hstatus.Of(p.Store, handoff, p.WorkspaceDirs); err != nil {
+			return "", fmt.Errorf("block: %w", err)
 		}
-		staleReasons, err = p.Store.HandoffFreshness(handoff, p.WorkspaceDirs)
-		if err != nil {
-			return "", fmt.Errorf("block: handoff freshness: %w", err)
-		}
-		staleReasons = dropClearedFailure(staleReasons, failure.found)
 	}
 
 	author := ""
@@ -213,7 +204,7 @@ func Render(p Params) (string, error) {
 			return "", fmt.Errorf("block: resume handoff author: %w", err)
 		}
 	}
-	slot1 := resumeSlot(handoff, hasHandoff, staleReasons, doneAt, isDone, resumeLabel, handoffAuthorClause(author, p.Harness), pick.branchClause(readerBranch))
+	slot1 := resumeSlot(handoff, hasHandoff, status, resumeLabel, handoffAuthorClause(author, p.Harness), pick.branchClause(readerBranch))
 	if !hasHandoff {
 		slot1 = pointer
 	}
@@ -247,7 +238,7 @@ func Render(p Params) (string, error) {
 	}
 	slot2 := joinLines(repoLine, deltaSlot(deltaEvents, shellSessions, p.SessionID, handoffSessionID, priorRuns), failure.line(p.Now), testsLine, ledgerLine)
 	slot3 := coordinationSlot(liveSessions, allEvents, p.SessionID, p.ProcFS)
-	slot4 := attentionSlot(draftCount, contradictionCount, len(staleReasons) > 0, failure.found)
+	slot4 := attentionSlot(draftCount, contradictionCount, status.PossiblyStale(), failure.found)
 
 	syncWarn, err := syncWarning(p)
 	if err != nil {
@@ -306,7 +297,7 @@ func joinParts(parts ...string) string {
 // spelled out in prose (task 56317fe7 — measured on Brian's desktop: a
 // handoff's text named its predecessor in prose because the block carried
 // no id at all, so the chain never linked).
-func resumeSlot(rec store.Record, ok bool, staleReasons []store.FreshnessReason, doneAt time.Time, isDone bool, label, authorClause, branchClause string) string {
+func resumeSlot(rec store.Record, ok bool, status hstatus.Status, label, authorClause, branchClause string) string {
 	if !ok {
 		return ""
 	}
@@ -315,10 +306,10 @@ func resumeSlot(rec store.Record, ok bool, staleReasons []store.FreshnessReason,
 		idPart += ", from " + rec.OriginDeviceName
 	}
 	idPart += branchClause
-	if isDone {
+	if status.Done {
 		// A done handoff is finished work: no Next, MODE or stale marker,
 		// and the lead is not "Resume:".
-		line := "Finished: " + idPart + ") marked done by you on " + doneAt.UTC().Format("2006-01-02") + "; nothing to resume. " + authorClause + rec.Text
+		line := "Finished: " + idPart + ") marked done by you on " + status.DoneAt.UTC().Format("2006-01-02") + "; nothing to resume. " + authorClause + rec.Text
 		if label != "" {
 			line += "\nLocation: " + label
 		}
@@ -334,7 +325,7 @@ func resumeSlot(rec store.Record, ok bool, staleReasons []store.FreshnessReason,
 	if label != "" {
 		line += "\nLocation: " + label
 	}
-	if marker := staleMarker(staleReasons); marker != "" {
+	if marker := staleMarker(status.Reasons); marker != "" {
 		line += "\n" + marker
 	}
 	return line
@@ -676,30 +667,8 @@ func staleMarker(reasons []store.FreshnessReason) string {
 	return "⚠ possibly stale: " + strings.Join(clauses, "; ")
 }
 
-// dropClearedFailure removes the later-failure reason when no failure is
-// still open (lastFailure found none: an attributable passing run cleared
-// every one), so a fixed failure is no longer possibly-stale evidence.
-// File-edit, record and contradiction reasons are untouched.
-func dropClearedFailure(reasons []store.FreshnessReason, failureOpen bool) []store.FreshnessReason {
-	if failureOpen {
-		return reasons
-	}
-	var kept []store.FreshnessReason
-	for _, r := range reasons {
-		if r.Kind != store.FreshnessLaterFailure {
-			kept = append(kept, r)
-		}
-	}
-	return kept
-}
-
 func staleReasonClause(r store.FreshnessReason) string {
-	ids := make([]string, 0, len(r.RecordIDs)+len(r.EventIDs))
-	ids = append(ids, r.RecordIDs...)
-	for _, id := range r.EventIDs {
-		ids = append(ids, strconv.FormatInt(id, 10))
-	}
-	idList := strings.Join(ids, ",")
+	idList := strings.Join(hstatus.Evidence(r), ",")
 	switch r.Kind {
 	case store.FreshnessContradicted:
 		return fmt.Sprintf("contradicted (ids %s)", idList)
@@ -810,86 +779,17 @@ type failure struct {
 	ts    time.Time
 }
 
-// lastFailure finds the newest uncleared failure in events (already
-// restricted to those since the handoff, ordered by id): a shell `command`
-// event with a non-zero exit, or a tool.result that is_error or carries a
-// non-zero exit (its command is read back from the matching tool.use). A
-// later result for the same subject clears it: the same Bash command (by
-// shellcmd.Key, so `-v` or a piped `| tail` does not make it a different one), or
-// the same tool and path, coming back as a non-error tool.result or a shell
-// event with exit 0. A different command passing says nothing about the one
-// that failed, so it clears nothing.
+// lastFailure is the newest failure in events (already restricted to those
+// since the handoff, ordered by id) that no later pass cleared, by the one
+// cleared-failure rule a Handoff's status also applies
+// (hstatus.OpenFailures).
 func lastFailure(events []store.TimelineEvent) failure {
-	type subject struct{ key, cmd string }
-	toolSubject := map[string]subject{}
-	var open []failure
-	var keys []string
-	clear := func(key string) {
-		kept, keptKeys := open[:0], keys[:0]
-		for i, f := range open {
-			if keys[i] != key {
-				kept = append(kept, f)
-				keptKeys = append(keptKeys, keys[i])
-			}
-		}
-		open, keys = kept, keptKeys
-	}
-	for _, e := range events {
-		switch e.Kind {
-		case payload.KindToolUse:
-			var tu payload.ToolUse
-			if json.Unmarshal([]byte(e.Payload), &tu) == nil && tu.ToolUseID != "" {
-				sub := subject{cmd: tu.Command, key: "cmd:" + shellcmd.Key(tu.Command)}
-				if tu.Command == "" {
-					sub.cmd = tu.Name
-					sub.key = "tool:" + tu.Name + ":" + tu.Path
-				}
-				toolSubject[tu.ToolUseID] = sub
-			}
-		case payload.KindToolResult:
-			var tr payload.ToolResult
-			if json.Unmarshal([]byte(e.Payload), &tr) != nil {
-				continue
-			}
-			sub, known := toolSubject[tr.ToolUseID]
-			failed := tr.IsError || (tr.Exit != nil && *tr.Exit != 0)
-			if !failed {
-				if known && !shellcmd.ExitUnobserved(sub.cmd) {
-					clear(sub.key)
-				}
-				continue
-			}
-			if !known {
-				sub = subject{cmd: "(command not recorded)", key: "result:" + tr.ToolUseID}
-			}
-			clear(sub.key)
-			exit := 0
-			if tr.Exit != nil {
-				exit = *tr.Exit
-			}
-			open = append(open, failure{found: true, cmd: sub.cmd, exit: exit, ts: e.TS})
-			keys = append(keys, sub.key)
-		case payload.KindShellCommand:
-			var sc payload.ShellCommand
-			if json.Unmarshal([]byte(e.Payload), &sc) != nil {
-				continue
-			}
-			key := "cmd:" + shellcmd.Key(sc.Cmd)
-			if sc.Exit == 0 {
-				if !shellcmd.ExitUnobserved(sc.Cmd) {
-					clear(key)
-				}
-				continue
-			}
-			clear(key)
-			open = append(open, failure{found: true, cmd: sc.Cmd, exit: sc.Exit, ts: e.TS})
-			keys = append(keys, key)
-		}
-	}
+	open := hstatus.OpenFailures(events)
 	if len(open) == 0 {
 		return failure{}
 	}
-	return open[len(open)-1]
+	f := open[len(open)-1]
+	return failure{found: true, cmd: f.Command, exit: f.Exit, ts: f.TS}
 }
 
 // line renders `Last failure: <cmd> exit N (<age>)` (`failed` when no exit

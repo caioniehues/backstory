@@ -1,6 +1,7 @@
 package block_test
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -58,5 +59,31 @@ func TestClearedFailureIsNotStaleEvidence(t *testing.T) {
 	out = mustRender(t, st, fakeProcFS{}, self)
 	if !strings.Contains(out, "⚠ possibly stale") {
 		t.Fatalf("a later edit of a named path must still mark it:\n%s", out)
+	}
+}
+
+// While one failure is still open, the marker cites only that one: a failure
+// a later pass cleared is not evidence even next to an open one (#2).
+func TestStaleMarkerCitesOnlyTheOpenFailure(t *testing.T) {
+	exit1, exit2 := 1, 2
+	st := newTestStore(t)
+	mustUpsertProject(t, st, testProjectKey)
+	self := mustStartSession(t, st, "claude", "/proj", 100)
+	h := mustInsertHandoff(t, st, self, "handoff")
+	ts := h.TS
+	add := func(kind string, pl any) int64 {
+		ts = ts.Add(time.Second)
+		return mustAppendEvent(t, st, self, kind, ts, pl)
+	}
+	add(payload.KindToolUse, payload.ToolUse{ToolUseID: "t1", Name: "Bash", Command: "go test ./..."})
+	add(payload.KindToolResult, payload.ToolResult{ToolUseID: "t1", IsError: true, Exit: &exit1})
+	add(payload.KindToolUse, payload.ToolUse{ToolUseID: "t2", Name: "Bash", Command: "make lint"})
+	open := add(payload.KindToolResult, payload.ToolResult{ToolUseID: "t2", IsError: true, Exit: &exit2})
+	add(payload.KindToolUse, payload.ToolUse{ToolUseID: "t3", Name: "Bash", Command: "go test ./..."})
+	add(payload.KindToolResult, payload.ToolResult{ToolUseID: "t3"})
+
+	out := mustRender(t, st, fakeProcFS{}, self)
+	if want := fmt.Sprintf("1 later non-zero exit(s) (ids %d)", open); !strings.Contains(out, want) {
+		t.Fatalf("marker does not cite only the open failure %q:\n%s", want, out)
 	}
 }

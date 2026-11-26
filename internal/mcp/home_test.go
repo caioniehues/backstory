@@ -126,7 +126,7 @@ func mustOpenStoreRecord(t *testing.T, st *store.Store, workspaces []string, dir
 // syncs and counts); a session at the workspace root, or in a non-git folder
 // under it (any depth), keeps the workspace home.
 //
-// Mutation probe: restore the any-depth workspace rehoming (handoffHomeKey
+// Mutation probe: restore the any-depth workspace rehoming (project.HandoffHome
 // returning project.WorkspaceHome for every cwd) -> the repo case is RED.
 func TestHandoffHomeFollowsTheWritingSessionsOwnKey(t *testing.T) {
 	tmp := t.TempDir()

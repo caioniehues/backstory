@@ -4,6 +4,7 @@ import (
 	"math"
 	"slices"
 	"testing"
+	"time"
 )
 
 // vectorIDs is the ids of hits, in order.
@@ -143,5 +144,24 @@ func TestRecordVector(t *testing.T) {
 		if vec, ok, err := e.s.RecordVector(c.id, c.model); err != nil || ok || vec != nil {
 			t.Errorf("RecordVector(%s, %s) = %v, %v, %v; want none", c.id, c.model, vec, ok, err)
 		}
+	}
+}
+
+// An expired Draft is filtered out of the vector scan before ranking, and
+// isn't counted as waiting for a vector either.
+func TestNearestVectorsExcludesExpiredDrafts(t *testing.T) {
+	e := newSearchEnv(t)
+	expired := e.insertDraft("expired guess", time.Now().Add(-time.Hour))
+	mustUpsertVector(t, e.s, expired, testModel, []float32{1, 0})
+	e.insertDraft("expired guess, no vector", time.Now().Add(-time.Hour))
+	live := e.insertDraft("live guess", time.Now().Add(time.Hour))
+	mustUpsertVector(t, e.s, live, testModel, []float32{0.6, 0.8})
+
+	scan := e.nearest([]float32{1, 0}, SearchFilter{ProjectKey: "proj-a", Limit: 1})
+	if !slices.Equal(vectorIDs(scan.Hits), []string{live}) {
+		t.Fatalf("hits = %v, want [%s] (the closer expired Draft is never a hit)", vectorIDs(scan.Hits), live)
+	}
+	if scan.Unembedded != 0 {
+		t.Errorf("Unembedded = %d, want 0 (an expired Draft is not waiting to be searched)", scan.Unembedded)
 	}
 }

@@ -262,3 +262,35 @@ func TestSearchTextKeyTermsOnly(t *testing.T) {
 		t.Fatalf("KeyTermsOnly: got %v, want only [%s]", got, sqlite)
 	}
 }
+
+// insertDraft writes an inferred Note (a Draft) in proj-a expiring at
+// expires.
+func (e *searchEnv) insertDraft(text string, expires time.Time) string {
+	e.t.Helper()
+	id, err := e.s.InsertRecord(InsertRecordParams{
+		Identity: Identity{Kind: IdentityInference}, Kind: KindNote, Text: text,
+		SessionID: e.sessionA, ProjectKey: "proj-a", ExpiresAt: &expires,
+	})
+	if err != nil {
+		e.t.Fatalf("InsertRecord draft: %v", err)
+	}
+	return id
+}
+
+// An expired Draft is a stale guess, so the text match leaves it out before
+// ranking; a Draft that hasn't expired yet still matches.
+func TestSearchTextExcludesExpiredDrafts(t *testing.T) {
+	e := newSearchEnv(t)
+	e.insertDraft("lantern lantern lantern guess", time.Now().Add(-time.Hour))
+	live := e.insertDraft("lantern guess still fresh", time.Now().Add(time.Hour))
+	kept := e.insert("proj-a", KindNote, "a lantern note among many other words", "")
+
+	got := e.search("lantern", SearchFilter{ProjectKey: "proj-a", Limit: 1})
+	if !slices.Equal(got, []string{live}) {
+		t.Fatalf("limit 1: got %v, want [%s] (the expired Draft never takes the slot)", got, live)
+	}
+	got = e.search("lantern", SearchFilter{ProjectKey: "proj-a", Limit: 10})
+	if !slices.Equal(got, []string{live, kept}) {
+		t.Fatalf("got %v, want [%s %s] (no expired Draft)", got, live, kept)
+	}
+}

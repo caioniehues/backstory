@@ -1,6 +1,7 @@
 // Package handoff decides a Handoff's status: Done, Possibly stale (with the
-// reasons and the Evidence each cites), or neither. It is the one place the
-// SessionStart block, This Week and recall ask, so the three surfaces agree.
+// reasons and the Evidence each cites), or neither, and words those reasons
+// (Status.Label, Line). It is the one place the SessionStart block, This
+// Week and recall ask, so the three surfaces agree.
 package handoff
 
 import (

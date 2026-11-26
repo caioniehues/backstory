@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/RidgetopAi/backstory/internal/graph"
-	"github.com/RidgetopAi/backstory/internal/store"
 )
 
 // withNeighbours is limits plus graph.NeighboursPerSeed Neighbours per seed
@@ -19,9 +18,9 @@ func withNeighbours(limits graph.Limits, scope graph.Scope) graph.Limits {
 }
 
 // anchorScope is what a text anchor reads: its location scope when it has
-// one, else its Project under the key the store files it as.
-func anchorScope(st *store.Store, anchor Anchor) graph.Scope {
-	return graph.Scope{ProjectKey: st.CanonicalProjectKey(anchor.ProjectKey), Location: anchor.Scope}
+// one, else its Project. graph.Scope.Has is the rule for what is inside it.
+func anchorScope(anchor Anchor) graph.Scope {
+	return graph.Scope{ProjectKey: anchor.ProjectKey, Location: anchor.Scope}
 }
 
 // joinReasons is reasons ("; "-joined) plus each of more's not already

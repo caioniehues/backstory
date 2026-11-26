@@ -442,8 +442,9 @@ func resolveTextAnchor(st *store.Store, searcher search.Searcher, anchor Anchor,
 		}
 	}
 
+	scope := anchorScope(anchor)
 	g, err := graph.Walk(context.Background(), graph.Source{Store: st, Searcher: searcher, Workspaces: workspaces},
-		seeds, withNeighbours(graph.Limits{Hops: graph.DefaultHops}, anchorScope(st, anchor)))
+		seeds, withNeighbours(graph.Limits{Hops: graph.DefaultHops}, scope))
 	if err != nil {
 		return nil, notices{}, fmt.Errorf("recall: text anchor: %w", err)
 	}
@@ -466,7 +467,7 @@ func resolveTextAnchor(st *store.Store, searcher search.Searcher, anchor Anchor,
 		out[i] = found{rec: rec}
 		if node, ok := widened[rec.ID]; ok {
 			out[i].reached, out[i].handoff = node.Reached, node.Handoff
-			out[i].otherProject = !inScope(st, anchor, rec)
+			out[i].otherProject = !scope.Has(st, rec)
 		}
 	}
 	return out, n, nil
@@ -484,17 +485,6 @@ func superseded(st *store.Store, id string) (bool, error) {
 		}
 	}
 	return false, nil
-}
-
-// inScope reports whether rec belongs to what a project or text anchor
-// reads: its location scope when it has one (the store's own rule: the
-// scope's repo key, or one of its Sessions), else its Project.
-func inScope(st *store.Store, anchor Anchor, rec store.Record) bool {
-	key := st.CanonicalProjectKey(rec.ProjectKey)
-	if ls := anchor.Scope; ls != nil {
-		return (ls.RepoKey != "" && key == ls.RepoKey) || ls.SessionIDs[rec.SessionID]
-	}
-	return key == st.CanonicalProjectKey(anchor.ProjectKey)
 }
 
 // namesHandoffKind reports whether query has a word naming the handoff kind.

@@ -128,14 +128,15 @@ type recallItemJSON struct {
 
 // reachedJSON is how a Record was reached: {via: "edge", type, direction,
 // from, hops} or {via: "neighbour", from, similarity}. direction is
-// relative to from: "out" is from -> this Record.
+// relative to from: "out" is from -> this Record. A Neighbour always
+// carries similarity, even 0; an edge never does.
 type reachedJSON struct {
-	Via        string  `json:"via"`
-	Type       string  `json:"type,omitempty"`
-	Direction  string  `json:"direction,omitempty"`
-	From       string  `json:"from"`
-	Hops       int     `json:"hops,omitempty"`
-	Similarity float64 `json:"similarity,omitempty"`
+	Via        string   `json:"via"`
+	Type       string   `json:"type,omitempty"`
+	Direction  string   `json:"direction,omitempty"`
+	From       string   `json:"from"`
+	Hops       int      `json:"hops,omitempty"`
+	Similarity *float64 `json:"similarity,omitempty"`
 }
 
 // newReachedJSON is r's JSON, nil for a direct hit.
@@ -143,10 +144,15 @@ func newReachedJSON(r *graph.Reached) *reachedJSON {
 	if r == nil {
 		return nil
 	}
-	return &reachedJSON{
+	out := &reachedJSON{
 		Via: string(r.Via), Type: string(r.Type), Direction: string(r.Direction),
-		From: r.From, Hops: r.Hops, Similarity: r.Similarity,
+		From: r.From, Hops: r.Hops,
 	}
+	if r.Via == graph.ViaNeighbour {
+		sim := r.Similarity
+		out.Similarity = &sim
+	}
+	return out
 }
 
 // handoffStateJSON is a Handoff's status from internal/handoff; evidence

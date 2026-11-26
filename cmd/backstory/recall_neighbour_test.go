@@ -39,3 +39,33 @@ func TestRecallJSONNeighbourReachedAndNotice(t *testing.T) {
 		t.Errorf("notice = %q, want %q", parsed.Notice, result.Notice)
 	}
 }
+
+// A Neighbour's reached always carries its similarity, even 0 (a Searcher
+// whose cosine floor is 0 or below can return one); an edge's reached
+// never does.
+func TestRecallJSONNeighbourAlwaysCarriesItsSimilarity(t *testing.T) {
+	const from = "aaaa1111-0000-4000-8000-000000000001"
+	item := func(id string, r *graph.Reached) recall.Item {
+		return recall.Item{ID: id, Kind: store.KindNote, TS: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), Reached: r, ConfirmedBy: []store.Confirmation{}}
+	}
+	result := recall.Result{Items: []recall.Item{
+		item("bbbb2222-0000-4000-8000-000000000002", &graph.Reached{Via: graph.ViaNeighbour, From: from}),
+		item("cccc3333-0000-4000-8000-000000000003", &graph.Reached{Via: graph.ViaEdge, Type: store.EdgeInforms, Direction: graph.DirectionOut, From: from, Hops: 1}),
+	}}
+	var out bytes.Buffer
+	if code := printRecallJSON(&out, "acme-widgets", recall.AltitudeSummary, result); code != 0 {
+		t.Fatalf("printRecallJSON = %d", code)
+	}
+	var parsed struct {
+		Items []map[string]json.RawMessage `json:"items"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &parsed); err != nil {
+		t.Fatalf("json.Unmarshal(%q): %v", out.String(), err)
+	}
+	if got, want := string(parsed.Items[0]["reached"]), `{"via":"neighbour","from":"`+from+`","similarity":0}`; got != want {
+		t.Errorf("Neighbour's reached = %s, want %s", got, want)
+	}
+	if got, want := string(parsed.Items[1]["reached"]), `{"via":"edge","type":"informs","direction":"out","from":"`+from+`","hops":1}`; got != want {
+		t.Errorf("edge's reached = %s, want %s", got, want)
+	}
+}

@@ -131,3 +131,79 @@ func TestThisWeekHandoffResolvesAtTheLocalFolderNotAPeersCWD(t *testing.T) {
 		t.Errorf("Resume at %s is not %s:\n%s", repo, h, out)
 	}
 }
+
+// branchGit is oneRepoGit with branch checked out at root.
+type branchGit struct {
+	oneRepoGit
+	branch string
+}
+
+func (g branchGit) State(dir string) (project.State, bool) {
+	if _, ok := g.Repo(dir); !ok {
+		return project.State{}, false
+	}
+	return project.State{Branch: g.branch}, true
+}
+
+// A newer Handoff on main and an older one on the branch checked out in the
+// row's folder: the row lists the branch's, the one the SessionStart block
+// started there resumes (#3).
+func TestThisWeekHandoffPrefersTheBranchCheckedOutInItsFolder(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "b.db"), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	repo := filepath.Join(t.TempDir(), "x")
+	git := branchGit{oneRepoGit: oneRepoGit{root: repo}, branch: "feature"}
+	key := project.Key(repo, git, nil)
+	now := time.Now()
+	if err := st.UpsertProject(store.Project{Key: key, Toplevel: repo, FirstSeen: now}); err != nil {
+		t.Fatal(err)
+	}
+	sess, err := st.StartSession(store.StartSessionParams{ID: "local", Agent: "claude", CWD: repo, ProjectKey: key, StartedAt: now.Add(-time.Hour), Origin: store.OriginLive})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.AppendEvent(store.Event{TS: now.Add(-time.Hour), Kind: "tool.use", SessionID: sess, Source: "shell", Payload: `{}`}); err != nil {
+		t.Fatal(err)
+	}
+	handoff := func(text, branch string) string {
+		t.Helper()
+		id, err := st.InsertRecord(store.InsertRecordParams{
+			Identity: store.Identity{Kind: store.IdentityAgent}, Kind: store.KindHandoff, Text: text,
+			SessionID: sess, ProjectKey: key, GitBranch: branch,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(10 * time.Millisecond)
+		return id
+	}
+	onFeature := handoff("resume feature", "feature")
+	handoff("resume main", "main")
+
+	res, err := week.Build(week.Params{Store: st, Git: git, Now: now.Add(time.Minute)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var row *week.ProjectSummary
+	for i := range res.WhereLeftOff {
+		if res.WhereLeftOff[i].Project.ProjectKey == key {
+			row = &res.WhereLeftOff[i].Project
+		}
+	}
+	if row == nil {
+		t.Fatalf("no this-week row for %s: %+v", key, res.WhereLeftOff)
+	}
+	if row.HandoffID != onFeature {
+		t.Errorf("this-week handoff = %q, want %s (the one on feature, checked out at %s)", row.HandoffID, onFeature, repo)
+	}
+	out, err := block.Render(block.Params{Store: st, ProjectKey: key, CWD: repo, Git: git, Now: now.Add(time.Minute)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "(id "+onFeature+")") {
+		t.Errorf("Resume at %s is not %s:\n%s", repo, onFeature, out)
+	}
+}

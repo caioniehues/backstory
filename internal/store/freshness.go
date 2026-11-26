@@ -108,13 +108,9 @@ func (s *Store) HandoffFreshness(h Record, workspaces []string) ([]FreshnessReas
 	} else if done {
 		return nil, nil
 	}
-	boundaryID := h.ID
-	boundaryEventCursor := h.EventCursor
-	if affirmID, affirmCursor, ok, err := s.latestAffirmInforming(h.ID); err != nil {
+	boundaryID, boundaryEventCursor, err := s.freshnessBoundary(h)
+	if err != nil {
 		return nil, err
-	} else if ok {
-		boundaryID = affirmID
-		boundaryEventCursor = affirmCursor
 	}
 
 	memberKeys, sessionIDs, err := s.homeMembership(h.ProjectKey, workspaces)
@@ -280,17 +276,41 @@ func (s *Store) handoffFolder(h Record) (string, error) {
 	return strings.TrimPrefix(h.ProjectKey, workspaceKeyPrefix), nil
 }
 
-// laterFailureEvents returns, ascending by id, the AGENT tool.result
-// events that are is_error or carry a non-zero exit, after sinceEventCursor,
-// from a session of sessionIDs that started in the same folder as the
-// session that wrote h (same cwd, or the same git repo toplevel). Human
-// shell-capture command events never count (typos, an ssh session ending,
-// grep finding nothing stay on the timeline only), and neither does an agent
-// failure located in another folder: a tool.result carries no cwd, so its
-// location is its session's folder — not its project key, which every
-// non-git folder under a workspace shares. Unlike laterEventsTouchingAbout
-// it needs no about[] path.
-func (s *Store) laterFailureEvents(h Record, sessionIDs []string, sinceEventCursor int64) ([]FailureDetail, error) {
+// LaterFailureScope returns the Timeline events HandoffFreshness judges h's
+// later failures among, ascending by id: every event after h's boundary (its
+// own event_cursor, or the latest Affirm's) from a session of h's home that
+// started in the same folder as the session that wrote h, agent and shell
+// sessions alike. A pass that clears a failure is looked for here, so the
+// failure and its clearing are judged in one scope. workspaces is as for
+// HandoffFreshness.
+func (s *Store) LaterFailureScope(h Record, workspaces []string) ([]TimelineEvent, error) {
+	_, cursor, err := s.freshnessBoundary(h)
+	if err != nil {
+		return nil, err
+	}
+	_, sessionIDs, err := s.homeMembership(h.ProjectKey, workspaces)
+	if err != nil {
+		return nil, err
+	}
+	return s.failureScopeEvents(h, sessionIDs, cursor)
+}
+
+// freshnessBoundary is where h's possibly-stale evidence starts: h itself,
+// or the latest affirm informing it.
+func (s *Store) freshnessBoundary(h Record) (id string, eventCursor int64, err error) {
+	affirmID, affirmCursor, ok, err := s.latestAffirmInforming(h.ID)
+	if err != nil {
+		return "", 0, err
+	}
+	if ok {
+		return affirmID, affirmCursor, nil
+	}
+	return h.ID, h.EventCursor, nil
+}
+
+// failureScopeEvents is every event after sinceEventCursor from a session of
+// sessionIDs that started in h's folder (handoffFolder).
+func (s *Store) failureScopeEvents(h Record, sessionIDs []string, sinceEventCursor int64) ([]TimelineEvent, error) {
 	folder, err := s.handoffFolder(h)
 	if err != nil {
 		return nil, err
@@ -305,7 +325,21 @@ func (s *Store) laterFailureEvents(h Record, sessionIDs []string, sinceEventCurs
 			own = append(own, id)
 		}
 	}
-	events, err := s.eventsSinceIDForSessions(own, sinceEventCursor)
+	return s.eventsSinceIDForSessions(own, sinceEventCursor)
+}
+
+// laterFailureEvents returns, ascending by id, the AGENT tool.result
+// events that are is_error or carry a non-zero exit, after sinceEventCursor,
+// from a session of sessionIDs that started in the same folder as the
+// session that wrote h (same cwd, or the same git repo toplevel). Human
+// shell-capture command events never count (typos, an ssh session ending,
+// grep finding nothing stay on the timeline only), and neither does an agent
+// failure located in another folder: a tool.result carries no cwd, so its
+// location is its session's folder — not its project key, which every
+// non-git folder under a workspace shares. Unlike laterEventsTouchingAbout
+// it needs no about[] path.
+func (s *Store) laterFailureEvents(h Record, sessionIDs []string, sinceEventCursor int64) ([]FailureDetail, error) {
+	events, err := s.failureScopeEvents(h, sessionIDs, sinceEventCursor)
 	if err != nil {
 		return nil, err
 	}

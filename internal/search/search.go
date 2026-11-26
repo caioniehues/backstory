@@ -58,6 +58,11 @@ const (
 	ReasonNoRecordVector = "no vector for this Record yet"
 )
 
+// ErrEmbeddingsOff is what an Embedder returns (or wraps) when embeddings
+// are switched off where it embeds, as the daemon's does after `embed
+// --off`. The query reads ReasonEmbeddingsOff, as with no Embedder at all.
+var ErrEmbeddingsOff = errors.New(ReasonEmbeddingsOff)
+
 // Via says which side of the search found a Hit.
 type Via string
 
@@ -326,6 +331,9 @@ func (s *searcher) withDeadline(ctx context.Context, call func(context.Context) 
 
 // unavailable is the Reason for an Embedder failure.
 func (s *searcher) unavailable(err error) string {
+	if errors.Is(err, ErrEmbeddingsOff) {
+		return ReasonEmbeddingsOff
+	}
 	if errors.Is(err, errDeadline) {
 		return fmt.Sprintf("%squery embedding missed the %s deadline", ReasonUnavailablePrefix, s.deadline)
 	}

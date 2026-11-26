@@ -3,6 +3,7 @@ package search
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"slices"
 	"strings"
@@ -311,5 +312,23 @@ func TestRecordQueryWhenTheEmbedderFails(t *testing.T) {
 	res := e.search(Query{RecordID: anchor, ProjectKey: "proj-a", Limit: 10})
 	if want := "embeddings unavailable: runtime broken"; len(res.Hits) != 0 || res.Reason != want {
 		t.Fatalf("result = %+v, want no hits and reason %q", res, want)
+	}
+}
+
+// An Embedder that reports embeddings switched off (the daemon's, after
+// `embed --off`) reads as "embeddings off", the same as having none, for
+// text and Record queries alike.
+func TestEmbedderThatIsSwitchedOffReadsAsEmbeddingsOff(t *testing.T) {
+	e := newHybridEnv(t, &fakeEmbedder{err: fmt.Errorf("daemon: %w", ErrEmbeddingsOff)})
+	hit := e.insertVec("quokka", 1, 0)
+	res := e.search(Query{Text: "quokka", ProjectKey: "proj-a", Limit: 10})
+	if got := ids(res.Hits); !slices.Equal(got, []string{hit}) {
+		t.Fatalf("hits = %v, want [%s]", got, hit)
+	}
+	if res.Reason != ReasonEmbeddingsOff {
+		t.Errorf("text query Reason = %q, want %q", res.Reason, ReasonEmbeddingsOff)
+	}
+	if res := e.search(Query{RecordID: hit, ProjectKey: "proj-a", Limit: 10}); res.Reason != ReasonEmbeddingsOff {
+		t.Errorf("Record query Reason = %q, want %q", res.Reason, ReasonEmbeddingsOff)
 	}
 }

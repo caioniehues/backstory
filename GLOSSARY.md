@@ -56,6 +56,10 @@ _Avoid_: provenance level, trust level
 A Record whose Tier is `inferred`: Backstory's own guess, waiting to be Promoted, and allowed to expire.
 _Avoid_: suggestion, candidate, proposal
 
+**Dream**:
+A Backstory run that reads a Project's recent Sessions and Records and writes Drafts for the Human or an Agent to Promote. It never changes what it reads.
+_Avoid_: consolidation, summary run, reflection
+
 **Promote**:
 The Human or an Agent confirming a Draft by writing a new Record at their own Tier that informs it. The Session the Draft was inferred from cannot promote it.
 _Avoid_: approve, accept, upgrade

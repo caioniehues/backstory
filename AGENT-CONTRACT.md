@@ -155,7 +155,9 @@ note({ kind: decision | outcome | handoff | note | claim,  text })
   session's own repo key; only a session with no repo (workspace root, non-git folder) keeps the
   workspace home. The result's additive `project_key` field reports where the record landed.
   A `decision` note's result may also carry additive `related_decisions` (up to 3 current
-  decisions in the project sharing an `about[]` path or distinctive terms) and a `message`;
+  decisions in the project sharing an `about[]` path or distinctive terms, or close in meaning
+  while embeddings are on; the new decision's text is embedded like a Record, never by the warm
+  query server) and a `message`;
   the lookup only reports and never writes an edge.
 - **Tier is set by the daemon from the caller's identity, never from a parameter.** A note
   from an agent process is `agent-declared`. `human-declared` is reachable only from the

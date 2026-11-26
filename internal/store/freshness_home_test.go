@@ -73,3 +73,57 @@ func TestHandoffFreshnessScopesToHomeAcrossRepos(t *testing.T) {
 		t.Fatalf("reason event ids = %v, want [%d]", reasons[0].EventIDs, editID)
 	}
 }
+
+// TestHandoffFreshnessRepoUnderWorkspaceSeesLaterEdit: a handoff written from
+// a session inside a git repo that lives under a workspace dir keeps the
+// repo's own key (decision dc0a4387: mcp's handoffHomeKey and the rehome
+// migration). A LATER session in that same repo editing the file the handoff
+// names must flag it possibly stale, exactly as it would for a repo outside
+// every workspace.
+func TestHandoffFreshnessRepoUnderWorkspaceSeesLaterEdit(t *testing.T) {
+	workspaceDir := "/tmp/fixture-freshness/projects"
+	workspaces := []string{workspaceDir}
+
+	repoKey := workspaceDir + "/omarcade"
+	fileF := repoKey + "/F.go"
+
+	s := mustOpen(t, tempDBPath(t))
+	mustUpsertProject(t, s, repoKey)
+
+	sessA, err := s.StartSession(StartSessionParams{
+		Agent: "claude", CWD: repoKey, ProjectKey: repoKey, StartedAt: time.Now(), Origin: OriginLive,
+	})
+	if err != nil {
+		t.Fatalf("StartSession(A): %v", err)
+	}
+	handoffID, err := s.InsertRecord(InsertRecordParams{
+		Identity: Identity{Kind: IdentityAgent}, Kind: KindHandoff, Text: "handoff naming F",
+		About: []string{fileF}, SessionID: sessA, ProjectKey: repoKey,
+	})
+	if err != nil {
+		t.Fatalf("InsertRecord handoff: %v", err)
+	}
+	handoff, err := s.GetRecord(handoffID)
+	if err != nil {
+		t.Fatalf("GetRecord handoff: %v", err)
+	}
+
+	sessB, err := s.StartSession(StartSessionParams{
+		Agent: "claude", CWD: repoKey, ProjectKey: repoKey, StartedAt: time.Now(), Origin: OriginLive,
+	})
+	if err != nil {
+		t.Fatalf("StartSession(B): %v", err)
+	}
+	editID := mustAppendToolUseEvent(t, s, sessB, "Edit", fileF)
+
+	reasons, err := s.HandoffFreshness(handoff, workspaces)
+	if err != nil {
+		t.Fatalf("HandoffFreshness: %v", err)
+	}
+	if len(reasons) != 2 || reasons[0].Kind != FreshnessLaterActivity || reasons[1].Kind != FreshnessLaterUnrecordedWork {
+		t.Fatalf("HandoffFreshness = %+v, want later-activity then later-unrecorded-work", reasons)
+	}
+	if len(reasons[0].EventIDs) != 1 || reasons[0].EventIDs[0] != editID {
+		t.Fatalf("later-activity event ids = %v, want [%d]", reasons[0].EventIDs, editID)
+	}
+}

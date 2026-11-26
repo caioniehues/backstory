@@ -273,6 +273,34 @@ func TestQueryServerHonoursTheDeadline(t *testing.T) {
 	}
 }
 
+// lateCtx is a context whose deadline has a timer that hasn't fired yet: its
+// Deadline has passed but Err is still nil. Under load the socket's own
+// deadline (the same instant) can win that race.
+type lateCtx struct {
+	context.Context
+	dl time.Time
+}
+
+func (c lateCtx) Deadline() (time.Time, bool) { return c.dl, true }
+func (c lateCtx) Err() error                  { return nil }
+
+// A missed deadline reads as one even when the socket's timeout is noticed
+// before ctx's own timer fires, so the search's reason says "missed the
+// deadline", not "i/o timeout".
+func TestQueryServerMissedDeadlineBeatsTheContextTimer(t *testing.T) {
+	e := newServerEnv(t, "AMD Radeon RX 7800 XT")
+	t.Setenv("STUB_SERVER_DELAY", "2s")
+	t.Setenv("STUB_SERVER_SLOW", "too slow")
+	q := e.start(embed.QueryServerConfig{})
+	waitEmbed(t, q, "warm up")
+
+	ctx := lateCtx{Context: context.Background(), dl: time.Now().Add(20 * time.Millisecond)}
+	_, _, err := q.EmbedQuery(ctx, "too slow")
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("err = %v, want it to wrap context.DeadlineExceeded", err)
+	}
+}
+
 // A crashed server is restarted after the backoff, and queries in between
 // fail with the reason instead of hanging.
 func TestQueryServerRestartsACrashedServer(t *testing.T) {

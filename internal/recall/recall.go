@@ -31,6 +31,11 @@ const maxProjectRecords = 500
 // maxTextResults bounds a free-text anchor's own search the same way.
 const maxTextResults = 200
 
+// textAnchorSeeds is how many of a text anchor's hits, best first by search
+// rank, its Ledger walk starts from (#32: "Text anchors widen from their
+// top 10 search hits").
+const textAnchorSeeds = 10
+
 // AnchorKind is the kind of anchor Build resolves to a starting record set.
 type AnchorKind string
 
@@ -75,7 +80,8 @@ func RecordAnchor(idOrPrefix string) Anchor {
 	return Anchor{Kind: AnchorRecord, RecordID: idOrPrefix}
 }
 
-// TextAnchor anchors on a free-text search, scoped to projectKey.
+// TextAnchor anchors on a free-text search, scoped to projectKey, plus the
+// records the Ledger walk reaches from its top textAnchorSeeds hits.
 func TextAnchor(projectKey, query string) Anchor {
 	return Anchor{Kind: AnchorText, ProjectKey: projectKey, Text: query}
 }
@@ -178,13 +184,14 @@ type Item struct {
 
 	// ProjectKey is the Project the record belongs to.
 	ProjectKey string
-	// OtherProject is set on a record anchor's item from a Project other
-	// than the anchor record's: the walk crosses scope, and the item is
-	// labelled with its Project.
+	// OtherProject is set on a walk-reached item from outside the anchor's
+	// Project (the anchor record's, or a text anchor's Project or location
+	// scope): the walk crosses scope, and the item is labelled with its
+	// Project.
 	OtherProject bool
-	// Reached is how a record anchor's walk reached the item (graph.Walk);
-	// nil for a direct hit: the anchor itself, and every project or text
-	// anchor item.
+	// Reached is how a record or text anchor's walk reached the item
+	// (graph.Walk); nil for a direct hit: the anchor record itself, every
+	// text anchor hit, and every project anchor item.
 	Reached *graph.Reached
 	// Handoff is handoff's status for a Handoff that isn't Tombstoned,
 	// whatever its recall Status; nil for any other item.
@@ -307,8 +314,7 @@ func resolve(st *store.Store, searcher search.Searcher, anchor Anchor, workspace
 		f, err := resolveRecordAnchor(st, searcher, anchor.RecordID, workspaces)
 		return f, notices{}, err
 	case AnchorText:
-		recs, n, err := resolveTextAnchor(st, searcher, anchor)
-		return direct(recs), n, err
+		return resolveTextAnchor(st, searcher, anchor, workspaces)
 	default:
 		return nil, notices{}, fmt.Errorf("recall: unknown anchor kind %q", anchor.Kind)
 	}
@@ -372,24 +378,30 @@ var handoffKindWords = map[string]bool{"handoff": true, "handoffs": true, "resum
 
 // resolveTextAnchor takes searcher's hits for the query (a Handoff's next
 // text included), adds every handoff at the location when the query names
-// the handoff kind, and re-orders the match set into sequence order. When
-// nothing matches it falls back to the location's latest handoff and says
-// so in the returned notice, which also carries the searcher's reason.
-func resolveTextAnchor(st *store.Store, searcher search.Searcher, anchor Anchor) ([]store.Record, notices, error) {
-	found, err := searcher.Search(context.Background(), search.Query{
-		Text: anchor.Text, ProjectKey: anchor.ProjectKey, Scope: anchor.Scope, Limit: maxTextResults,
+// the handoff kind, then widens: the Ledger walk (graph.Walk,
+// graph.DefaultHops) from the top textAnchorSeeds hits by search rank adds
+// what it reaches, minus Tombstoned Records. Every hit and every added
+// handoff stays a direct hit, even one the walk reaches. A superseded
+// Record is never a direct hit, only reached by an edge (#32). The result
+// is in sequence order. When nothing matches it falls back to the
+// location's latest handoff and says so in the returned notice, which also
+// carries the searcher's reason.
+func resolveTextAnchor(st *store.Store, searcher search.Searcher, anchor Anchor, workspaces []string) ([]found, notices, error) {
+	res, err := searcher.Search(context.Background(), search.Query{
+		Text: anchor.Text, ProjectKey: anchor.ProjectKey, Scope: anchor.Scope, Limit: maxTextResults, CurrentOnly: true,
 	})
 	if err != nil {
 		return nil, notices{}, fmt.Errorf("recall: text anchor: %w", err)
 	}
-	ids := make([]string, 0, len(found.Hits))
+	ids := make([]string, 0, len(res.Hits))
 	seen := map[string]bool{}
-	for _, h := range found.Hits {
+	for _, h := range res.Hits {
 		ids = append(ids, h.RecordID)
 		seen[h.RecordID] = true
 	}
+	seeds := ids[:min(len(ids), textAnchorSeeds)]
 
-	n := notices{reason: found.Reason}
+	n := notices{reason: res.Reason}
 	wantHandoffs := namesHandoffKind(anchor.Text)
 	if wantHandoffs || len(ids) == 0 {
 		all, err := projectRecords(st, anchor)
@@ -401,6 +413,11 @@ func resolveTextAnchor(st *store.Store, searcher search.Searcher, anchor Anchor)
 			if rec.Kind != store.KindHandoff || rec.TombstonedAt != nil {
 				continue
 			}
+			if sup, err := superseded(st, rec.ID); err != nil {
+				return nil, notices{}, err
+			} else if sup {
+				continue
+			}
 			if latest == "" {
 				latest = rec.ID
 			}
@@ -410,15 +427,64 @@ func resolveTextAnchor(st *store.Store, searcher search.Searcher, anchor Anchor)
 			}
 		}
 		if len(ids) == 0 && latest != "" {
+			seen[latest] = true
 			ids = append(ids, latest)
 			n.fallback = fmt.Sprintf("no match for %s; latest handoff shown", anchor.Text)
 		}
 	}
+
+	g, err := graph.Walk(context.Background(), graph.Source{Store: st, Searcher: searcher, Workspaces: workspaces},
+		seeds, graph.Limits{Hops: graph.DefaultHops})
+	if err != nil {
+		return nil, notices{}, fmt.Errorf("recall: text anchor: %w", err)
+	}
+	widened := map[string]graph.Node{}
+	for _, node := range g.Nodes {
+		if seen[node.Record.ID] || node.Status == graph.StatusTombstoned {
+			continue
+		}
+		widened[node.Record.ID] = node
+		ids = append(ids, node.Record.ID)
+	}
+
 	recs, err := st.RecordsByIDs(ids)
 	if err != nil {
 		return nil, notices{}, fmt.Errorf("recall: text anchor: %w", err)
 	}
-	return recs, n, nil
+	out := make([]found, len(recs))
+	for i, rec := range recs {
+		out[i] = found{rec: rec}
+		if node, ok := widened[rec.ID]; ok {
+			out[i].reached, out[i].handoff = node.Reached, node.Handoff
+			out[i].otherProject = !inScope(st, anchor, rec)
+		}
+	}
+	return out, n, nil
+}
+
+// superseded reports whether a supersedes edge points into the record id.
+func superseded(st *store.Store, id string) (bool, error) {
+	edges, err := st.EdgesTouching(id)
+	if err != nil {
+		return false, fmt.Errorf("recall: text anchor: %w", err)
+	}
+	for _, e := range edges {
+		if e.Type == store.EdgeSupersedes && e.ToID == id {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// inScope reports whether rec belongs to what a project or text anchor
+// reads: its location scope when it has one (the store's own rule: the
+// scope's repo key, or one of its Sessions), else its Project.
+func inScope(st *store.Store, anchor Anchor, rec store.Record) bool {
+	key := st.CanonicalProjectKey(rec.ProjectKey)
+	if ls := anchor.Scope; ls != nil {
+		return (ls.RepoKey != "" && key == ls.RepoKey) || ls.SessionIDs[rec.SessionID]
+	}
+	return key == st.CanonicalProjectKey(anchor.ProjectKey)
 }
 
 // namesHandoffKind reports whether query has a word naming the handoff kind.

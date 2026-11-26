@@ -31,7 +31,7 @@ func (h syncHome) workspaceHandoff(t *testing.T, ws, repo, text string) string {
 	defer func() { _ = st.Close() }()
 	repoKey := project.Key(repo, project.RealGit{}, []string{ws})
 	// Only a project with a remote syncs; the session's cwd is under the
-	// workspace, so this-week resolves the row via store.LatestHandoffAt.
+	// workspace, so this-week resolves the row at its folder (handoff.ResumeFor).
 	if err := st.UpsertProject(store.Project{Key: repoKey, RemoteURL: "git@github.com:acme/demo.git", Toplevel: repo, FirstSeen: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +55,7 @@ func (h syncHome) workspaceHandoff(t *testing.T, ws, repo, text string) string {
 // F12: B writes H1, A writes H2 later; a real `backstory sync` over the
 // BACKSTORY_SYNC_SSH local-subprocess transport inserts H1 after H2 on A (and
 // H2 after H1 on B). The workspace session routes this-week through
-// store.LatestHandoffAt; on both machines it must show H2, as Resume does.
+// handoff.ResumeFor at the folder; on both machines it must show H2, as Resume does.
 func TestThisWeekHandoffMatchesResumeAfterSyncSubprocess(t *testing.T) {
 	bin := buildBackstory(t)
 	home := t.TempDir()

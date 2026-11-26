@@ -174,3 +174,62 @@ func TestUnrehomeWritesNoCopyWithNothingToRepair(t *testing.T) {
 		t.Errorf("pre-unrehome copies = %v, want none", copies)
 	}
 }
+
+// The repair moves only Handoffs written on this Device. A Peer's Session
+// joins a home only by its own key (project.InHome), so a Peer's Handoff
+// filed under a folder key stays there, even when the Peer's folder path is a
+// folder under a local Workspace: the repair neither moves it nor queues it
+// for sync again, and with nothing else to repair it writes no copy.
+func TestUnrehomeLeavesAPeersHandoffUnderItsOwnKey(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "backstory.db")
+	wsDir := filepath.Join(dir, "projects")
+	deep := filepath.Join(wsDir, "group", "notes")
+	workspaces := []string{wsDir}
+
+	s, err := Open(path, workspaces, fakeSweepGit{})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	db := s.DB()
+	rawInsertProject(t, db, deep, deep, sweepT1)
+	rawInsertSession(t, db, "s-peer", deep, deep, sweepT1)
+	if _, err := db.Exec(`INSERT INTO devices (id, name, is_self) VALUES ('dev-peer', 'peer', 0)`); err != nil {
+		t.Fatalf("insert peer device: %v", err)
+	}
+	if _, err := db.Exec(`UPDATE sessions SET origin = 'synced', origin_device = 'dev-peer' WHERE id = 's-peer'`); err != nil {
+		t.Fatalf("mark peer session: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO records (id, ts, kind, tier, text, about, session_id, project_key, evidence, event_cursor, origin_device)
+		VALUES ('h-peer', ?, ?, 'agent-declared', 'text for h-peer', '[]', 's-peer', ?, '[]', 0, 'dev-peer')`,
+		tsToNanos(sweepT2), string(KindHandoff), deep); err != nil {
+		t.Fatalf("insert peer handoff: %v", err)
+	}
+	var seqBefore int
+	if err := db.QueryRow(`SELECT COALESCE(MAX(seq),0) FROM sync_changes`).Scan(&seqBefore); err != nil {
+		t.Fatalf("max seq: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	s, err = Open(path, workspaces, fakeSweepGit{})
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+	db = s.DB()
+	if got := projectKeyOf(t, db, "h-peer"); got != deep {
+		t.Errorf("h-peer project_key = %q, want its own %q", got, deep)
+	}
+	var maxSeq int
+	if err := db.QueryRow(`SELECT COALESCE(MAX(seq),0) FROM sync_changes`).Scan(&maxSeq); err != nil {
+		t.Fatalf("max seq: %v", err)
+	}
+	if maxSeq != seqBefore {
+		t.Errorf("the repair queued a Peer's Handoff: max seq %d, want %d", maxSeq, seqBefore)
+	}
+	if copies, _ := filepath.Glob(path + ".pre-unrehome-*"); len(copies) != 0 {
+		t.Errorf("nothing to repair, yet copies = %v", copies)
+	}
+}

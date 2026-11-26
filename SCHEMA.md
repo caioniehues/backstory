@@ -85,8 +85,8 @@ row (`record`) is queued per moved record so paired machines receive it. Tombsto
 where they are. A second `Open` finds nothing to move and writes no backup.
 After it, every `store.Open` runs the repair of what the re-home did before #5, when it moved a
 Workspace-filed handoff written in a non-git folder deeper under a Workspace (a session keyed to its
-bare folder path) onto that folder's path: every live handoff filed under its writing session's own
-key whose Handoff home (`project.HandoffHome`, with the Workspaces configured at that `Open`) is a
+bare folder path) onto that folder's path: every live handoff written on this Device
+(`origin_device IS NULL`) filed under its writing session's own key whose Handoff home (`project.HandoffHome`, with the Workspaces configured at that `Open`) is a
 Workspace moves back to that Workspace's key, the same drop-rewrite-recreate of `records_no_update`
 in one transaction, with one `sync_changes` row (`record`) queued per moved record. When there is one
 to move, the file is first copied as `backstory.db.pre-unrehome-<UTC time>`; with none (a fresh store,

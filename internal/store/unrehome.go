@@ -10,11 +10,13 @@ import (
 )
 
 // unrehomeCandidates selects the Handoffs the repair at Open considers: live
-// Handoffs filed under their writing Session's own key, where that key is
-// neither a Workspace nor a Peer's placeholder. That is where the pre-#5
-// re-home moved a Workspace-filed Handoff.
+// Handoffs written on this Device, filed under their writing Session's own
+// key, where that key is neither a Workspace nor a Peer's placeholder. That is
+// where the pre-#5 re-home moved a Workspace-filed Handoff. A Peer's Handoff
+// is never one: a Peer's Session joins a home only by its own key
+// (project.InHome), so its folder path, a path on the Peer, files nothing here.
 const unrehomeCandidates = `SELECT r.id, s.cwd, s.project_key FROM records r JOIN sessions s ON s.id = r.session_id
-	WHERE r.kind = 'handoff' AND r.tombstoned_at IS NULL
+	WHERE r.kind = 'handoff' AND r.tombstoned_at IS NULL AND r.origin_device IS NULL
 	AND r.project_key = s.project_key
 	AND r.project_key NOT LIKE 'workspace:%' AND r.project_key NOT LIKE 'sync:%'
 	ORDER BY r.id`

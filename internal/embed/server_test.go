@@ -455,7 +455,11 @@ func TestBackoffDoublesToItsCapAndResets(t *testing.T) {
 	if d := b.Next(); d != time.Second {
 		t.Errorf("after Reset: %v, want 1s", d)
 	}
+	// The defaults are the drain's (#42): 5 s first, doubling to 10 min.
 	var zero embed.Backoff
+	if d := zero.Next(); d != 5*time.Second {
+		t.Errorf("the default first wait = %v, want 5s", d)
+	}
 	for range 20 {
 		zero.Next()
 	}

@@ -27,6 +27,31 @@ func Fingerprint(modelSHA256, backend string, dim int) string {
 	return modelSHA256 + "|" + TemplateVersion + "|" + backend + "|" + strconv.Itoa(dim)
 }
 
+// FingerprintFor is the fingerprint of the vectors model makes on dev: its
+// cached ModelHash, dev's backend and Dim. The drain, the query server and
+// `embed --on` all name their vectors with it, so they always agree.
+func FingerprintFor(s Settings, model string, dev Device) (string, error) {
+	hash, err := ModelHash(s, model)
+	if err != nil {
+		return "", err
+	}
+	return Fingerprint(hash, dev.Backend, Dim), nil
+}
+
+// shortHashLen is how much of the model hash ShortFingerprint keeps.
+const shortHashLen = 8
+
+// ShortFingerprint is fp for people: the model hash, its first part, cut to
+// 8 characters, e.g. "2188ac1d|tpl-ecc4bd80|vulkan|768". A string that isn't
+// a fingerprint comes back as it is.
+func ShortFingerprint(fp string) string {
+	hash, rest, ok := strings.Cut(fp, "|")
+	if ok && len(hash) > shortHashLen {
+		return hash[:shortHashLen] + "|" + rest
+	}
+	return fp
+}
+
 // ModelHash is the sha256 of the model file at path. It is cached in the
 // Device-local SettingModelHash, keyed by path, size and mtime, so the
 // 310 MB file isn't hashed again at each start.

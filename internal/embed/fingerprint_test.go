@@ -41,6 +41,39 @@ func TestFingerprintIsModelTemplateBackendAndDim(t *testing.T) {
 	}
 }
 
+// FingerprintFor names vectors by the model file's hash and the device's
+// backend, not its name or argument.
+func TestFingerprintForIsTheModelHashAndTheDevicesBackend(t *testing.T) {
+	st := openStore(t)
+	model := filepath.Join(t.TempDir(), "model.gguf")
+	if err := os.WriteFile(model, []byte("abc"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fp, err := embed.FingerprintFor(st, model, embed.Device{Arg: "Vulkan1", Name: "AMD Radeon RX 7800 XT", Backend: "vulkan"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad|tpl-ecc4bd80|vulkan|768"; fp != want {
+		t.Fatalf("FingerprintFor = %q, want %q", fp, want)
+	}
+	if _, err := embed.FingerprintFor(st, filepath.Join(t.TempDir(), "missing.gguf"), embed.Device{Backend: "vulkan"}); err == nil {
+		t.Fatal("FingerprintFor a missing model: no error")
+	}
+}
+
+// ShortFingerprint cuts only the model hash, to 8 characters.
+func TestShortFingerprintCutsTheModelHash(t *testing.T) {
+	for fp, want := range map[string]string{
+		"2188ac1deca4b77dffefd603c2776a9d76d9d74ec01841392982ebb840b09135|tpl-ecc4bd80|vulkan|768": "2188ac1d|tpl-ecc4bd80|vulkan|768",
+		"2188ac1d|tpl-ecc4bd80|cpu|768": "2188ac1d|tpl-ecc4bd80|cpu|768",
+		"not a fingerprint":             "not a fingerprint",
+	} {
+		if got := embed.ShortFingerprint(fp); got != want {
+			t.Errorf("ShortFingerprint(%q) = %q, want %q", fp, got, want)
+		}
+	}
+}
+
 // The model's hash is cached in settings by path, size and mtime: the same
 // file isn't hashed again, and a changed one is.
 func TestModelHashIsCachedByPathSizeAndMtime(t *testing.T) {

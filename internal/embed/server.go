@@ -345,11 +345,10 @@ func (q *QueryServer) start(ctx context.Context, s Setup) (*serverProc, string, 
 	if err != nil {
 		return nil, "", err
 	}
-	hash, err := ModelHash(q.cfg.Settings, s.Model)
+	fp, err := FingerprintFor(q.cfg.Settings, s.Model, dev)
 	if err != nil {
 		return nil, "", err
 	}
-	fp := Fingerprint(hash, dev.Backend, Dim)
 
 	if err := os.MkdirAll(filepath.Dir(q.cfg.Socket), 0o700); err != nil {
 		return nil, "", fmt.Errorf("embed: query server socket dir: %w", err)

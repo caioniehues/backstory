@@ -26,6 +26,9 @@ type Store struct {
 	// legacyToCanonical maps a configured workspace dir's plain pre-79f7b20e
 	// key to its "workspace:" key (canonicalizeProjectKey's lookup table).
 	legacyToCanonical map[string]string
+	// workspaces is Open's configured Workspace dirs, for migrations that
+	// file by project.HandoffHome (0029).
+	workspaces []string
 	// onRecordWrite is OnRecordWrite's hook, nil when unset.
 	onRecordWrite atomic.Pointer[func()]
 }
@@ -68,7 +71,7 @@ func Open(path string, workspaceDirs []string, git project.Git) (*Store, error) 
 	for k, v := range targets {
 		legacy[k] = v
 	}
-	s := &Store{db: db, path: path, legacyToCanonical: legacy}
+	s := &Store{db: db, path: path, legacyToCanonical: legacy, workspaces: workspaceDirs}
 	if err := s.migrate(); err != nil {
 		_ = db.Close()
 		return nil, err

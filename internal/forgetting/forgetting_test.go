@@ -34,7 +34,7 @@ func TestCopiesFindsEveryPreCopyItNames(t *testing.T) {
 	db := filepath.Join(t.TempDir(), "backstory.db")
 	write(t, db)
 	var want []string
-	for _, why := range []Reason{Restore, Sweep, Identity, Rehome, Reason("next"), Reason("re-home")} {
+	for _, why := range []Reason{Restore, Sweep, Identity, Rehome, Unrehome, Reason("next"), Reason("re-home")} {
 		want = append(want, write(t, PreCopyPath(db, why, t0)))
 	}
 	got, err := Set{DBPath: db}.Copies()

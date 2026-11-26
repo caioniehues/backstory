@@ -15,6 +15,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -57,6 +58,24 @@ const (
 	// current fingerprint, so its Neighbours can't be looked up.
 	ReasonNoRecordVector = "no vector for this Record yet"
 )
+
+// reasonSeparator joins several Reasons into one.
+const reasonSeparator = "; "
+
+// JoinReasons joins reasons, each of which may already be several joined,
+// into one: each reason once, in the order first given, empties dropped.
+// A caller with Reasons from more than one query says them this way.
+func JoinReasons(reasons ...string) string {
+	var all []string
+	for _, joined := range reasons {
+		for _, r := range strings.Split(joined, reasonSeparator) {
+			if r != "" && !slices.Contains(all, r) {
+				all = append(all, r)
+			}
+		}
+	}
+	return strings.Join(all, reasonSeparator)
+}
 
 // ErrEmbeddingsOff is what an Embedder returns (or wraps) when embeddings
 // are switched off where it embeds, as the daemon's does after `embed

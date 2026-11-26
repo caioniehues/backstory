@@ -205,7 +205,7 @@ type Result struct {
 // call, no env read) — it only needs the list to pass through to
 // store.HandoffFreshness when annotating a handoff's possibly-stale status.
 func Build(st *store.Store, searcher search.Searcher, anchor Anchor, altitude Altitude, budgetTokens int, workspaces []string) (Result, error) {
-	recs, notes, err := resolve(st, searcher, anchor)
+	recs, said, err := resolve(st, searcher, anchor)
 	if err != nil {
 		return Result{}, err
 	}
@@ -226,21 +226,21 @@ func Build(st *store.Store, searcher search.Searcher, anchor Anchor, altitude Al
 	}
 
 	res := fit(items, altitude, budgetTokens)
-	var notices []string
-	if notes.fallback != "" && len(res.Items) > 0 {
-		notices = append(notices, notes.fallback)
+	var lines []string
+	if said.fallback != "" && len(res.Items) > 0 {
+		lines = append(lines, said.fallback)
 	}
-	if notes.reason != "" {
-		notices = append(notices, notes.reason)
+	if said.reason != "" {
+		lines = append(lines, said.reason)
 	}
-	res.Notice = strings.Join(notices, "; ")
+	res.Notice = strings.Join(lines, "; ")
 	return res, nil
 }
 
-// notes is what resolve has to say about how it found the records: the
+// notices is what resolve has to say about how it found the records: the
 // latest-Handoff fallback notice and the Searcher's reason, each "" when
 // there is none.
-type notes struct {
+type notices struct {
 	fallback string
 	reason   string
 }
@@ -251,18 +251,18 @@ type notes struct {
 // search hits are re-ordered into sequence order the same way, so every
 // anchor kind's output obeys the one ordering rule (SCHEMA.md invariant
 // 10: order by sequence, never ts).
-func resolve(st *store.Store, searcher search.Searcher, anchor Anchor) ([]store.Record, notes, error) {
+func resolve(st *store.Store, searcher search.Searcher, anchor Anchor) ([]store.Record, notices, error) {
 	switch anchor.Kind {
 	case AnchorProject:
 		recs, err := projectRecords(st, anchor)
-		return recs, notes{}, err
+		return recs, notices{}, err
 	case AnchorRecord:
 		recs, err := resolveRecordAnchor(st, anchor.RecordID)
-		return recs, notes{}, err
+		return recs, notices{}, err
 	case AnchorText:
 		return resolveTextAnchor(st, searcher, anchor)
 	default:
-		return nil, notes{}, fmt.Errorf("recall: unknown anchor kind %q", anchor.Kind)
+		return nil, notices{}, fmt.Errorf("recall: unknown anchor kind %q", anchor.Kind)
 	}
 }
 
@@ -341,12 +341,12 @@ var handoffKindWords = map[string]bool{"handoff": true, "handoffs": true, "resum
 // the handoff kind, and re-orders the match set into sequence order. When
 // nothing matches it falls back to the location's latest handoff and says
 // so in the returned notice, which also carries the searcher's reason.
-func resolveTextAnchor(st *store.Store, searcher search.Searcher, anchor Anchor) ([]store.Record, notes, error) {
+func resolveTextAnchor(st *store.Store, searcher search.Searcher, anchor Anchor) ([]store.Record, notices, error) {
 	found, err := searcher.Search(context.Background(), search.Query{
 		Text: anchor.Text, ProjectKey: anchor.ProjectKey, Scope: anchor.Scope, Limit: maxTextResults,
 	})
 	if err != nil {
-		return nil, notes{}, fmt.Errorf("recall: text anchor: %w", err)
+		return nil, notices{}, fmt.Errorf("recall: text anchor: %w", err)
 	}
 	ids := make([]string, 0, len(found.Hits))
 	seen := map[string]bool{}
@@ -355,12 +355,12 @@ func resolveTextAnchor(st *store.Store, searcher search.Searcher, anchor Anchor)
 		seen[h.RecordID] = true
 	}
 
-	n := notes{reason: found.Reason}
+	n := notices{reason: found.Reason}
 	wantHandoffs := namesHandoffKind(anchor.Text)
 	if wantHandoffs || len(ids) == 0 {
 		all, err := projectRecords(st, anchor)
 		if err != nil {
-			return nil, notes{}, err
+			return nil, notices{}, err
 		}
 		var latest string
 		for _, rec := range all {
@@ -382,7 +382,7 @@ func resolveTextAnchor(st *store.Store, searcher search.Searcher, anchor Anchor)
 	}
 	recs, err := st.RecordsByIDs(ids)
 	if err != nil {
-		return nil, notes{}, fmt.Errorf("recall: text anchor: %w", err)
+		return nil, notices{}, fmt.Errorf("recall: text anchor: %w", err)
 	}
 	return recs, n, nil
 }

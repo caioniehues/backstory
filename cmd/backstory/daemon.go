@@ -179,7 +179,7 @@ func runDaemon(_ []string, stdout, stderr io.Writer) int {
 	case <-ctx.Done():
 		logger.Printf("signal received, shutting down")
 		_ = srv.Close()
-		<-serveErr
+		<-serveErr //nolint:errcheck // after Close, Serve returning is the shutdown we asked for
 		return 0
 	case err := <-serveErr:
 		if err != nil {

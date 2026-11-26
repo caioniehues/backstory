@@ -238,12 +238,14 @@ auto-memory 200 lines / 25 KB).
 1. **Resume pointer** — the latest `handoff` for THIS project (on the reader's git branch
    when it is known: see "Resume is per branch" below), rendered as `Resume: (id
    <id>) <text>` so the id is available verbatim for `note`'s `supersedes`, its MODE line
-   if present, and a `⚠ possibly stale: ...` marker naming its reasons and evidence ids
-   when later positive evidence — a contradiction, a later record or timeline event
+   if present, and a `⚠ possibly stale: <reasons> (evidence <ids>)` marker naming its
+   reasons (one short clause each, e.g. `cargo test failed (exit 101) after it; 2 later
+   edits to files it names` — the same words `recall` and This Week use) and the evidence
+   ids they cite when later positive evidence — a contradiction, a later record or timeline event
    touching a path it names, a later failed command, or a later session in the same
    project home that edited files and wrote no record — flags it and no later
    `confirm affirm` on it has arrived since (decision bcc9fa54). The last reason,
-   `later-unrecorded-work` ("since then N sessions edited M files and wrote no note"), is
+   `later-unrecorded-work` ("N later sessions edited M files and wrote no note"), is
    cleared by a record of any kind (handoff, outcome, note or decision) written by that
    later session; all are written with the `note` tool
 2. **Delta** — timeline since that handoff, compressed to "N sessions, files touched, last

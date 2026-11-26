@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync/atomic"
+	"time"
 
 	"github.com/RidgetopAi/backstory/internal/project"
 	_ "modernc.org/sqlite" // registers the pure-Go "sqlite" driver
@@ -28,6 +29,8 @@ type Store struct {
 	legacyToCanonical map[string]string
 	// onRecordWrite is OnRecordWrite's hook, nil when unset.
 	onRecordWrite atomic.Pointer[func()]
+	// clock is SetClock's clock, nil for time.Now.
+	clock atomic.Pointer[func() time.Time]
 }
 
 // Open opens (creating if needed) the SQLite database at path, and merges

@@ -164,6 +164,19 @@ func (s *Store) ContradictionsSince(projectKey string, since time.Time) ([]Contr
 	return out, nil
 }
 
+// SupersederOf is the Record superseding id among edges, which are id's
+// own (EdgesTouching): the source of the first supersedes edge into id.
+// ok is false when id isn't superseded. IsSuperseded asks the same of the
+// database.
+func SupersederOf(id string, edges []Edge) (superseder string, ok bool) {
+	for _, e := range edges {
+		if e.Type == EdgeSupersedes && e.ToID == id {
+			return e.FromID, true
+		}
+	}
+	return "", false
+}
+
 // IsSuperseded reports whether any supersedes edge points at id.
 func (s *Store) IsSuperseded(id string) (bool, error) {
 	var n int

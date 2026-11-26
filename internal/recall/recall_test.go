@@ -139,7 +139,7 @@ func TestBuildProjectAnchorReturnsWholeLedgerNewestFirst(t *testing.T) {
 
 // TestBuildRecordAnchorWalksEdgesWithinTwoHops covers the record anchor,
 // both full id and a unique short prefix: the anchor record plus every
-// record reachable within edgeWalkHops (2) of any edge type, either
+// record reachable within graph.DefaultHops (2) of any edge type, either
 // direction — records reachable only at hop 3 must not appear.
 func TestBuildRecordAnchorWalksEdgesWithinTwoHops(t *testing.T) {
 	st := newTestStore(t)

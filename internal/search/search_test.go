@@ -166,3 +166,23 @@ func TestKeyTermsOnlyReachesTheTextSide(t *testing.T) {
 		t.Fatalf("hits = %v, want only [%s]", got, sqlite)
 	}
 }
+
+// JoinReasons says each reason once, in the order first given, whether it
+// came alone or already joined with others.
+func TestJoinReasonsSaysEachReasonOnce(t *testing.T) {
+	partial := ReasonPartialPrefix + "1 Record not embedded yet"
+	for _, c := range []struct {
+		in   []string
+		want string
+	}{
+		{nil, ""},
+		{[]string{"", ""}, ""},
+		{[]string{ReasonEmbeddingsOff, ReasonEmbeddingsOff}, ReasonEmbeddingsOff},
+		{[]string{partial + "; " + ReasonNoRecordVector, ReasonNoRecordVector, partial}, partial + "; " + ReasonNoRecordVector},
+		{[]string{"", ReasonNoRecordVector, ReasonEmbeddingsOff}, ReasonNoRecordVector + "; " + ReasonEmbeddingsOff},
+	} {
+		if got := JoinReasons(c.in...); got != c.want {
+			t.Errorf("JoinReasons(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}

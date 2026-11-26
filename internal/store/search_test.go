@@ -282,15 +282,48 @@ func (e *searchEnv) insertDraft(text string, expires time.Time) string {
 func TestSearchTextExcludesExpiredDrafts(t *testing.T) {
 	e := newSearchEnv(t)
 	e.insertDraft("lantern lantern lantern guess", time.Now().Add(-time.Hour))
-	live := e.insertDraft("lantern guess still fresh", time.Now().Add(time.Hour))
+	fresh := e.insertDraft("lantern guess still fresh", time.Now().Add(time.Hour))
 	kept := e.insert("proj-a", KindNote, "a lantern note among many other words", "")
 
 	got := e.search("lantern", SearchFilter{ProjectKey: "proj-a", Limit: 1})
-	if !slices.Equal(got, []string{live}) {
-		t.Fatalf("limit 1: got %v, want [%s] (the expired Draft never takes the slot)", got, live)
+	if !slices.Equal(got, []string{fresh}) {
+		t.Fatalf("limit 1: got %v, want [%s] (the expired Draft never takes the slot)", got, fresh)
 	}
 	got = e.search("lantern", SearchFilter{ProjectKey: "proj-a", Limit: 10})
-	if !slices.Equal(got, []string{live, kept}) {
-		t.Fatalf("got %v, want [%s %s] (no expired Draft)", got, live, kept)
+	if !slices.Equal(got, []string{fresh, kept}) {
+		t.Fatalf("got %v, want [%s %s] (no expired Draft)", got, fresh, kept)
+	}
+}
+
+// ExpiredDraft is the one Draft-expiry rule, on the store's clock: an
+// inferred Record whose own expiry is at or before now. Search leaves out
+// exactly the Records it names. A Record of another Tier past its expiry,
+// such as a Claim, is not an expired Draft.
+func TestExpiredDraftIsSearchsRuleOnTheStoresClock(t *testing.T) {
+	e := newSearchEnv(t)
+	real := time.Now()
+	e.s.SetClock(func() time.Time { return real.Add(2 * time.Hour) })
+	lapsed := e.insertDraft("beacon guess, lapsed by the store's clock", real.Add(time.Hour))
+	fresh := e.insertDraft("beacon guess, fresh by the store's clock", real.Add(3*time.Hour))
+	claim, err := e.s.InsertRecord(InsertRecordParams{
+		Identity: Identity{Kind: IdentityAgent}, Kind: KindClaim, Text: "beacon claim, past its expiry",
+		SessionID: e.sessionA, ProjectKey: "proj-a", ExpiresAt: &real,
+	})
+	if err != nil {
+		t.Fatalf("InsertRecord claim: %v", err)
+	}
+
+	found := e.search("beacon", SearchFilter{ProjectKey: "proj-a", Limit: 10})
+	for id, want := range map[string]bool{lapsed: true, fresh: false, claim: false} {
+		rec, err := e.s.GetRecord(id)
+		if err != nil {
+			t.Fatalf("GetRecord: %v", err)
+		}
+		if got := e.s.ExpiredDraft(rec); got != want {
+			t.Errorf("ExpiredDraft(%q) = %v, want %v", rec.Text, got, want)
+		}
+		if searched := slices.Contains(found, id); searched == want {
+			t.Errorf("%q searched = %v, want %v (Search applies ExpiredDraft's rule)", rec.Text, searched, !want)
+		}
 	}
 }

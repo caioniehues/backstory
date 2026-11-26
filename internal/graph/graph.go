@@ -10,6 +10,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"time"
 
 	"github.com/RidgetopAi/backstory/internal/handoff"
 	"github.com/RidgetopAi/backstory/internal/search"
@@ -104,7 +105,8 @@ type Graph struct {
 // Walk returns the seeds plus every Record within limits.Hops declared
 // edges of one, either direction, any of the six types and across scope.
 // A Record reachable more than one way is reached by its fewest hops.
-// A seed id that names no Record is skipped.
+// A seed id that names no Record is skipped. An expired Draft reached by
+// an edge is left out, and the walk doesn't go through it.
 //
 // A confirm Record written by Done, Affirm or Promote is never a node, even
 // as a seed, and the walk doesn't go through it: its target carries it in
@@ -181,6 +183,9 @@ func (w *walker) admit(ids []string, how map[string]*Reached) ([]string, error) 
 		}
 		if fold {
 			w.folded[rec.ID] = true
+			continue
+		}
+		if how[rec.ID] != nil && expiredDraft(rec, time.Now()) {
 			continue
 		}
 		w.reached[rec.ID] = how[rec.ID]

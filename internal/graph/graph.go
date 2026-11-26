@@ -23,7 +23,7 @@ const DefaultHops = 2
 // Source is what Walk reads.
 type Source struct {
 	Store *store.Store
-	// Searcher finds Neighbours; Walk does not use it yet.
+	// Searcher finds Neighbours, by its Record query.
 	Searcher search.Searcher
 	// Workspaces is the caller's already-resolved Workspace list, passed
 	// through to Handoff status.
@@ -35,6 +35,10 @@ type Limits struct {
 	// Hops is how many declared edges, in either direction, a node may be
 	// from its nearest seed.
 	Hops int
+	// Neighbours is how many Neighbours each seed may add; zero adds none.
+	Neighbours int
+	// Scope is the caller's scope, the only place Neighbours come from.
+	Scope Scope
 }
 
 // Status is a node's status: one of the four `graph --json` names.
@@ -52,7 +56,7 @@ type Via string
 
 const (
 	ViaEdge Via = "edge"
-	// ViaNeighbour is a Neighbour link (#50); Walk does not make one yet.
+	// ViaNeighbour is a Neighbour link: close in meaning to a seed.
 	ViaNeighbour Via = "neighbour"
 )
 
@@ -99,6 +103,12 @@ type Graph struct {
 	Nodes []Node
 	// Edges are the declared edges with both ends among Nodes.
 	Edges []store.Edge
+	// NeighbourEdges join each seed to its Neighbours; never nil. They are
+	// computed for this walk and never stored (ADR-0003).
+	NeighbourEdges []NeighbourEdge
+	// Reason is why Neighbours are missing or partial, from the Searcher
+	// ("embeddings off", ...); "" when it gave none.
+	Reason string
 }
 
 // Walk returns the seeds plus every Record within limits.Hops declared
@@ -110,6 +120,9 @@ type Graph struct {
 // as a seed, and the walk doesn't go through it: its target carries it in
 // ConfirmedBy instead (#29's amendment). A Contradiction or Supersede
 // confirm stays a node, with its real edge.
+//
+// With limits.Neighbours set, each seed then adds its Neighbours (see
+// neighbours), which are never walked further.
 func Walk(ctx context.Context, src Source, seeds []string, limits Limits) (Graph, error) {
 	w := walker{st: src.Store, workspaces: src.Workspaces, edges: map[string][]store.Edge{}, reached: map[string]*Reached{}, folded: map[string]bool{}}
 
@@ -117,6 +130,7 @@ func Walk(ctx context.Context, src Source, seeds []string, limits Limits) (Graph
 	if err != nil {
 		return Graph{}, err
 	}
+	admittedSeeds := frontier
 	for hop := 1; hop <= limits.Hops && len(frontier) > 0; hop++ {
 		if err := ctx.Err(); err != nil {
 			return Graph{}, fmt.Errorf("graph: walk: %w", err)
@@ -147,6 +161,9 @@ func Walk(ctx context.Context, src Source, seeds []string, limits Limits) (Graph
 			return Graph{}, err
 		}
 	}
+	if err := w.neighbours(ctx, src.Searcher, admittedSeeds, limits); err != nil {
+		return Graph{}, err
+	}
 	return w.graph()
 }
 
@@ -161,6 +178,9 @@ type walker struct {
 	// folded holds the confirm Records met so far that are folded into
 	// their target rather than admitted.
 	folded map[string]bool
+	// neighbourEdges and reason are what neighbours found.
+	neighbourEdges []NeighbourEdge
+	reason         string
 }
 
 // admit adds ids that name a Record as nodes, with how each was reached,
@@ -243,7 +263,10 @@ func (w *walker) graph() (Graph, error) {
 	if err != nil {
 		return Graph{}, fmt.Errorf("graph: walk: %w", err)
 	}
-	g := Graph{Nodes: make([]Node, 0, len(recs)), Edges: []store.Edge{}}
+	g := Graph{Nodes: make([]Node, 0, len(recs)), Edges: []store.Edge{}, NeighbourEdges: w.neighbourEdges, Reason: w.reason}
+	if g.NeighbourEdges == nil {
+		g.NeighbourEdges = []NeighbourEdge{}
+	}
 	listed := map[store.Edge]bool{}
 	for _, rec := range recs {
 		edges, err := w.edgesOf(rec.ID)

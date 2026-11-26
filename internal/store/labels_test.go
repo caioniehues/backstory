@@ -15,7 +15,7 @@ const labelsWorkspaceDir = "/tmp/fixture/projects"
 var labelsWorkspaces = []string{labelsWorkspaceDir}
 
 // labelsFakeGit is a canned dir -> Repo lookup for sessionLabels/
-// LatestHandoffAt tests: only the repo dirs a test explicitly seeds report
+// Handoffs tests: only the repo dirs a test explicitly seeds report
 // as git working trees, exactly like a real filesystem where every other
 // dir under the workspace is a plain, non-git folder.
 type labelsFakeGit map[string]project.Repo
@@ -122,55 +122,6 @@ func TestSessionLabelsFallsBackToOwnFolder(t *testing.T) {
 	}
 	if want := []string{"projects"}; !reflect.DeepEqual(labels, want) {
 		t.Fatalf("sessionLabels (no file-touching events) = %v, want %v (its own folder)", labels, want)
-	}
-}
-
-// TestLatestHandoffAtFiltersHomeByRepo is store.LatestHandoffAt's own unit
-// coverage: two handoffs share one home (the workspace), each from a
-// session labelled for a different repo; a label-scoped lookup returns the
-// one whose session actually carries that label, even when it is NOT the
-// newest of the two.
-func TestLatestHandoffAtFiltersHomeByRepo(t *testing.T) {
-	s := mustOpen(t, tempDBPath(t))
-	home := "workspace:" + labelsWorkspaceDir
-	mustUpsertProject(t, s, home)
-
-	sessOmarcade, err := s.StartSession(StartSessionParams{
-		Agent: "claude", CWD: labelsWorkspaceDir + "/omarcade", ProjectKey: home, StartedAt: time.Now(), Origin: OriginLive,
-	})
-	if err != nil {
-		t.Fatalf("StartSession(omarcade): %v", err)
-	}
-	older, err := s.InsertRecord(InsertRecordParams{
-		Identity: Identity{Kind: IdentityAgent}, Kind: KindHandoff, Text: "omarcade handoff",
-		SessionID: sessOmarcade, ProjectKey: home,
-	})
-	if err != nil {
-		t.Fatalf("InsertRecord omarcade handoff: %v", err)
-	}
-
-	sessVidflow, err := s.StartSession(StartSessionParams{
-		Agent: "claude", CWD: labelsWorkspaceDir + "/vidflow", ProjectKey: home, StartedAt: time.Now(), Origin: OriginLive,
-	})
-	if err != nil {
-		t.Fatalf("StartSession(vidflow): %v", err)
-	}
-	if _, err := s.InsertRecord(InsertRecordParams{
-		Identity: Identity{Kind: IdentityAgent}, Kind: KindHandoff, Text: "vidflow handoff (newer)",
-		SessionID: sessVidflow, ProjectKey: home,
-	}); err != nil {
-		t.Fatalf("InsertRecord vidflow handoff: %v", err)
-	}
-
-	got, ok, err := s.LatestHandoffAt(labelsWorkspaceDir+"/omarcade", labelsGit, labelsWorkspaces)
-	if err != nil {
-		t.Fatalf("LatestHandoffAt: %v", err)
-	}
-	if !ok {
-		t.Fatal("LatestHandoffAt found = false, want true")
-	}
-	if got.ID != older {
-		t.Errorf("LatestHandoffAt(home, projects/omarcade) = %s, want the OLDER omarcade handoff %s, not the newer vidflow one", got.ID, older)
 	}
 }
 

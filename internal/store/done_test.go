@@ -82,9 +82,16 @@ func TestDoneNewestHandoffStaysLatestAndLaterHandoffIsNotDone(t *testing.T) {
 	}
 	latest := func() (Record, bool) {
 		t.Helper()
-		r, ok, err := s.LatestHandoffAt(labelsWorkspaceDir+"/omarcade", labelsGit, labelsWorkspaces)
-		if err != nil || !ok {
-			t.Fatalf("LatestHandoffAt = %v, %v", ok, err)
+		var r Record
+		for h, err := range s.Handoffs(HandoffQuery{ProjectKey: home, Dir: labelsWorkspaceDir + "/omarcade", Git: labelsGit, Workspaces: labelsWorkspaces}) {
+			if err != nil {
+				t.Fatalf("Handoffs: %v", err)
+			}
+			r = h
+			break
+		}
+		if r.ID == "" {
+			t.Fatal("Handoffs at omarcade: none")
 		}
 		_, done, err := s.HandoffDone(r.ID)
 		if err != nil {

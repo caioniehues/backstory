@@ -356,16 +356,6 @@ func (pk resumePick) branchClause(readerBranch string) string {
 	return ", from branch " + pk.rec.GitBranch + "; you are on " + readerBranch
 }
 
-// branchKeep is the Resume candidate filter for a reader on readerBranch: a
-// handoff written on that branch, or one with no known branch (old data
-// keeps working). nil, keep everything, when the reader's branch is unknown.
-func branchKeep(readerBranch string) func(store.Record) bool {
-	if readerBranch == "" {
-		return nil
-	}
-	return func(r store.Record) bool { return r.GitBranch == "" || r.GitBranch == readerBranch }
-}
-
 // branchPointerMaxAge is how old another branch's newest handoff may be and
 // still earn an "Also on branch" pointer.
 const branchPointerMaxAge = 14 * 24 * time.Hour
@@ -432,73 +422,39 @@ func branchPointerLines(p Params, readerBranch string, pick resumePick) (string,
 	return strings.Join(lines, "\n"), nil
 }
 
-// pickResume is the RESUME rule across devices (decision 2ac4c54f, D5): the
-// newest current handoff for the location, local and imported alike (imported
-// ones are homed on the local project), newest by ts then id. The loser, when
-// it is not superseded, becomes the also line. Each side is resolved by the
-// same location rule resolveResumeHandoff has always applied.
-//
-// With a known reader branch the newest handoff written on that branch (or
-// with no known branch) wins; with none there, the repo-wide newest is the
-// fallback and is marked otherBranch.
+// pickResume is the Resume handoff (handoff.ResumeFor) for the reader at
+// p.CWD on readerBranch, plus what the block adds at a Workspace root or a
+// non-git folder sharing its key: the Handoff's location label, or with none
+// a pointer line naming the projects that have one.
 func pickResume(p Params, readerBranch string) (resumePick, error) {
-	keep := branchKeep(readerBranch)
-	pk, err := pickResumeWhere(p, keep)
-	if err != nil || keep == nil || pk.found {
+	res, err := hstatus.ResumeFor(p.Store, hstatus.Reader{
+		ProjectKey: p.ProjectKey, Dir: p.CWD, Branch: readerBranch, Git: p.Git, Workspaces: p.WorkspaceDirs,
+	})
+	if err != nil {
+		return resumePick{}, err
+	}
+	pk := resumePick{rec: res.Handoff, found: res.Found, also: res.Also, otherBranch: res.OtherBranch}
+	if p.CWD == "" {
+		return pk, nil
+	}
+	home, ok := project.WorkspaceHome(p.CWD, p.WorkspaceDirs)
+	if !ok || home != p.ProjectKey {
+		// Inside a specific repo under the workspace (or no workspace at
+		// all): no label, the caller is already inside it.
+		return pk, nil
+	}
+	if !pk.found {
+		others, err := p.Store.HandoffsByWriter(home)
+		if err != nil {
+			return resumePick{}, fmt.Errorf("block: root handoffs: %w", err)
+		}
+		pk.pointer, err = projectPointerLine(p.Store, others, p.Git, p.WorkspaceDirs)
 		return pk, err
 	}
-	pk, err = pickResumeWhere(p, nil)
-	if err == nil && pk.found && pk.rec.GitBranch != "" && pk.rec.GitBranch != readerBranch {
-		pk.otherBranch = true
-	}
-	return pk, err
-}
-
-func pickResumeWhere(p Params, keep func(store.Record) bool) (resumePick, error) {
-	loc, locOK, locLabel, pointer, err := resolveResumeHandoff(p.Store, p.ProjectKey, p.CWD, p.Git, p.WorkspaceDirs, store.OriginLocal, keep)
-	if err != nil {
-		return resumePick{}, err
-	}
-	imp, impOK, impLabel, _, err := resolveResumeHandoff(p.Store, p.ProjectKey, p.CWD, p.Git, p.WorkspaceDirs, store.OriginImported, keep)
-	if err != nil {
-		return resumePick{}, err
-	}
-	switch {
-	case !impOK:
-		return resumePick{rec: loc, found: locOK, label: locLabel, pointer: pointer}, nil
-	case !locOK:
-		return resumePick{rec: imp, found: true, label: impLabel}, nil
-	}
-	win, winLabel, lose := loc, locLabel, imp
-	if newerHandoff(imp, loc) {
-		win, winLabel, lose = imp, impLabel, loc
-	}
-	// A handoff that the other one supersedes is no longer current: it
-	// cannot be the Resume line, and it earns no also line.
-	loserSuperseded, err := p.Store.IsSuperseded(lose.ID)
-	if err != nil {
-		return resumePick{}, err
-	}
-	winnerSuperseded, err := p.Store.IsSuperseded(win.ID)
-	if err != nil {
-		return resumePick{}, err
-	}
-	if winnerSuperseded && !loserSuperseded {
-		win, winLabel, lose = lose, loseLabel(lose, locLabel, impLabel, loc), win
-		loserSuperseded = true
-	}
-	pk := resumePick{rec: win, found: true, label: winLabel}
-	if !loserSuperseded {
-		pk.also = &lose
+	if pk.label, err = p.Store.HandoffLabel(pk.rec, p.Git, p.WorkspaceDirs); err != nil {
+		return resumePick{}, fmt.Errorf("block: resume handoff label: %w", err)
 	}
 	return pk, nil
-}
-
-func loseLabel(r store.Record, locLabel, impLabel string, loc store.Record) string {
-	if r.ID == loc.ID {
-		return locLabel
-	}
-	return impLabel
 }
 
 // newerHandoff is store.NewerHandoff, the one newest-handoff rule.
@@ -543,83 +499,6 @@ func handoffAuthorClause(author, reader string) string {
 // maxPointerProjects caps how many projects the workspace-root pointer line
 // names before it collapses the rest into "+N more".
 const maxPointerProjects = 3
-
-// resolveResumeHandoff is decision f3fa04c7's RESUME rule, unified by task
-// ed31b744: the newest non-tombstoned handoff that belongs to the caller's
-// location (store.LatestHandoffAt — the one resolver recall, export,
-// records and This Week's row share): the repo-key handoffs plus the
-// workspace-homed ones whose writing session is labelled with that
-// location; at the workspace root itself, exactly those labelled with the
-// root. At the root with none, no handoff body but a one-line pointer
-// (returned as the string) naming the projects that have one. With no
-// workspace involved at all (cwd empty, or outside every configured
-// workspace), the pre-f3fa04c7 behavior — the newest handoff for
-// projectKey, unchanged, no label.
-func resolveResumeHandoff(st *store.Store, projectKey, cwd string, git project.Git, workspaces []string, from store.OriginFilter, keep func(store.Record) bool) (store.Record, bool, string, string, error) {
-	if cwd == "" {
-		h, ok, err := st.LatestRecordFromWhere(projectKey, store.KindHandoff, from, keep)
-		return h, ok, "", "", err
-	}
-	home, ok := project.WorkspaceHome(cwd, workspaces)
-	if !ok {
-		h, ok, err := st.LatestRecordFromWhere(projectKey, store.KindHandoff, from, keep)
-		return h, ok, "", "", err
-	}
-
-	h, found, err := st.LatestHandoffAtFromWhere(cwd, git, workspaces, from, keep)
-	if err != nil {
-		return store.Record{}, false, "", "", fmt.Errorf("block: location handoff: %w", err)
-	}
-	if home != projectKey {
-		// Inside a specific repo under the workspace: no label shown, the
-		// caller is already inside it.
-		return h, found, "", "", nil
-	}
-
-	// At the workspace root itself — or a non-git direct child, which
-	// shares the root's key (decision 7a2556b6): with no handoff of its own
-	// it carries the root's.
-	if !found {
-		if root, ok := workspaceRootOf(cwd, home, workspaces); ok && root != filepath.Clean(cwd) {
-			h, found, err = st.LatestHandoffAtFromWhere(root, git, workspaces, from, keep)
-			if err != nil {
-				return store.Record{}, false, "", "", fmt.Errorf("block: root handoff: %w", err)
-			}
-		}
-	}
-	if !found {
-		if from == store.OriginImported {
-			return store.Record{}, false, "", "", nil
-		}
-		others, err := st.HandoffsByWriter(home)
-		if err != nil {
-			return store.Record{}, false, "", "", fmt.Errorf("block: root handoffs: %w", err)
-		}
-		pointer, err := projectPointerLine(st, others, git, workspaces)
-		return store.Record{}, false, "", pointer, err
-	}
-	label, err := st.HandoffLabel(h, git, workspaces)
-	if err != nil {
-		return store.Record{}, false, "", "", fmt.Errorf("block: resume handoff label: %w", err)
-	}
-	return h, true, label, "", nil
-}
-
-// workspaceRootOf is the configured workspace directory whose home key is
-// home and that holds cwd (cwd itself, or a direct child of it).
-func workspaceRootOf(cwd, home string, workspaces []string) (string, bool) {
-	cwd = filepath.Clean(cwd)
-	for _, w := range workspaces {
-		w = filepath.Clean(w)
-		if cwd != w && filepath.Dir(cwd) != w {
-			continue
-		}
-		if h, ok := project.WorkspaceHome(w, []string{w}); ok && h == home {
-			return w, true
-		}
-	}
-	return "", false
-}
 
 // projectPointerLine renders the one-line stand-in for a root resume with no
 // root-written handoff: each project (by label) with its latest handoff id,

@@ -46,15 +46,16 @@ func upsertProjectAt(t *testing.T, s *store.Store, toplevel string) {
 
 func insertStampedHandoff(t *testing.T, s *store.Store, sessionID, head string, about []string) store.Record {
 	t.Helper()
-	if _, err := s.InsertRecord(store.InsertRecordParams{
+	id, err := s.InsertRecord(store.InsertRecordParams{
 		Identity: store.Identity{Kind: store.IdentityAgent}, Kind: store.KindHandoff, Text: "stopped mid-way",
 		Next: "finish the parser", About: about, SessionID: sessionID, ProjectKey: testProjectKey, GitHead: head,
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("InsertRecord handoff: %v", err)
 	}
-	rec, ok, err := s.LatestRecord(testProjectKey, store.KindHandoff)
-	if err != nil || !ok {
-		t.Fatalf("LatestRecord: ok=%v err=%v", ok, err)
+	rec, err := s.GetRecord(id)
+	if err != nil {
+		t.Fatalf("GetRecord: %v", err)
 	}
 	return rec
 }

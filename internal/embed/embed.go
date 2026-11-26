@@ -1,9 +1,11 @@
 // Package embed is the embedding runtime: adapters over llama.cpp. The batch
 // embedder runs llama-embedding once per batch with Record text on stdin;
-// device resolution turns the stored embed.device match into the runtime's
-// -dev argument at each use; the fingerprint names the model, prompt
-// template, backend and dimension a vector was made with. Decisions: #16,
-// #19, #20 and its amendment, ADR-0003.
+// the query server keeps a warm llama-server on a private unix socket for
+// query text only, reached by a hand-rolled HTTP/1.1 client; device
+// resolution turns the stored embed.device match into the runtime's -dev
+// argument at each use; the fingerprint names the model, prompt template,
+// backend and dimension a vector was made with. Decisions: #16, #19, #20
+// and its amendment, ADR-0003.
 package embed
 
 // Setup is what `embed --on` checks and saves: the runtime, the model file

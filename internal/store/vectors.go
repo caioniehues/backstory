@@ -104,11 +104,7 @@ func (s *Store) NearestVectors(model string, query []float32, f SearchFilter) (V
 		scan.Hits = append(scan.Hits, all[i].hit)
 	}
 
-	kinds := make([]string, 0, 4)
-	for _, k := range EmbeddedKinds() {
-		kinds = append(kinds, string(k))
-	}
-	countArgs := append(append([]any{}, args...), jsonArray(kinds), model, len(query))
+	countArgs := append(append([]any{}, args...), embeddedKindsJSON(), model, len(query))
 	//nolint:gosec // where is assembled from fixed fragments and "?" placeholders; every value is bound
 	if err := s.db.QueryRow(`SELECT COUNT(*) FROM records r
 		WHERE `+where+` AND r.kind IN (SELECT value FROM json_each(?))

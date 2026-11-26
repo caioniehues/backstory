@@ -139,6 +139,21 @@ func TestBuildFlagsHandoffPossiblyStaleReasonLaterRecord(t *testing.T) {
 	}
 }
 
+// The label words the reasons as handoff's short label does, the same text
+// the SessionStart block and This Week show, then cites the Evidence by
+// short id.
+func TestStatusLabelOfPossiblyStaleHandoffIsHandoffsLabel(t *testing.T) {
+	st, sessionID := newFreshnessFixture(t)
+	h := mustInsertHandoffAbout(t, st, sessionID, []string{"a.go"})
+	later := mustInsertNoteAbout(t, st, sessionID, []string{"a.go"})
+	editID := mustAppendToolUseEvent(t, st, sessionID, "Edit", "a.go")
+
+	want := fmt.Sprintf("possibly stale: a later record shares a path it names; a later edit to a file it names (evidence %s,%d)", later[:8], editID)
+	if got := StatusLabel(buildHandoffItem(t, st, h.ID)); got != want {
+		t.Fatalf("StatusLabel =\n  %q\nwant\n  %q", got, want)
+	}
+}
+
 func TestBuildFlagsHandoffPossiblyStaleReasonLaterActivity(t *testing.T) {
 	st, sessionID := newFreshnessFixture(t)
 	h := mustInsertHandoffAbout(t, st, sessionID, []string{"a.go"})

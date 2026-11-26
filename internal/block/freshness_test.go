@@ -74,7 +74,7 @@ func TestRenderResumeSlotShowsPossiblyStaleMarkerAndAttentionCountsIt(t *testing
 	if idxResume >= idxMarker || idxMarker >= idxAttention {
 		t.Fatalf("marker not between Resume and Attention; got:\n%s", out)
 	}
-	if !strings.Contains(out, "later edit(s) to files it names") {
+	if !strings.Contains(out, "a later edit to a file it names") {
 		t.Errorf("marker missing the later-activity reason clause; got:\n%s", out)
 	}
 	if !strings.Contains(out, "Attention: 0 unconfirmed draft(s), 0 contradiction(s), 1 possibly-stale handoff") {
@@ -94,7 +94,7 @@ func TestRenderResumeSlotMarkerNamesContradictionEvidence(t *testing.T) {
 	contradiction := mustContradictRecord(t, s, self, handoff.ID)
 
 	out := mustRender(t, s, fakeProcFS{}, self)
-	if !strings.Contains(out, "⚠ possibly stale: contradicted (ids "+contradiction+")") {
+	if !strings.Contains(out, "⚠ possibly stale: contradicted by a later record (evidence "+contradiction+")") {
 		t.Fatalf("marker missing the contradiction reason with evidence id %s; got:\n%s", contradiction, out)
 	}
 }
@@ -165,7 +165,7 @@ func TestRenderUnflaggedHandoffRendersExactlyAsBefore(t *testing.T) {
 // confirm affirm instead of clearing); restore it -> GREEN.
 //
 // Mutation probe 3 — drop the marker from the Resume slot: in resumeSlot
-// (block.go), delete the `if marker := staleMarker(staleReasons); marker !=
+// (block.go), delete the `if marker := staleMarker(status); marker !=
 // "" { line += "\n" + marker }` block -> RED
 // (TestRenderResumeSlotShowsPossiblyStaleMarkerAndAttentionCountsIt: "⚠
 // possibly stale:" is missing from the Resume slot); restore it -> GREEN.
@@ -185,7 +185,7 @@ func TestRenderResumeSlotShowsUnrecordedWorkClause(t *testing.T) {
 	self := mustStartSession(t, s, "claude", "/proj", 102)
 
 	out := mustRender(t, s, fakeProcFS{}, self)
-	if !strings.Contains(out, "⚠ possibly stale: since then 1 session edited 2 files and wrote no note") {
+	if !strings.Contains(out, "⚠ possibly stale: 1 later session edited 2 files and wrote no note (evidence ") {
 		t.Errorf("missing unrecorded-work clause; got:\n%s", out)
 	}
 }

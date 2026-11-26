@@ -83,7 +83,7 @@ func TestStaleMarkerCitesOnlyTheOpenFailure(t *testing.T) {
 	add(payload.KindToolResult, payload.ToolResult{ToolUseID: "t3"})
 
 	out := mustRender(t, st, fakeProcFS{}, self)
-	if want := fmt.Sprintf("1 later non-zero exit(s) (ids %d)", open); !strings.Contains(out, want) {
+	if want := fmt.Sprintf("⚠ possibly stale: make lint failed (exit 2) after it (evidence %d)", open); !strings.Contains(out, want) {
 		t.Fatalf("marker does not cite only the open failure %q:\n%s", want, out)
 	}
 }

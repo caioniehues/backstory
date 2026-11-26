@@ -217,7 +217,7 @@ func TestRelativeAboutPathIsFlaggedStale(t *testing.T) {
 
 	mustAppendToolUseNamed(t, s, self, h.TS.Add(2*time.Minute), "Edit", "/repo/src/a.go")
 	out := renderAt(t, s, self, h.TS.Add(time.Hour))
-	if !strings.Contains(out, "⚠ possibly stale: 1 later edit(s) to files it names") {
+	if !strings.Contains(out, "⚠ possibly stale: a later edit to a file it names (evidence ") {
 		t.Errorf("relative about path was not flagged; got:\n%s", out)
 	}
 }

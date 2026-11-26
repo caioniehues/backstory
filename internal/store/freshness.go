@@ -37,7 +37,7 @@ const (
 	// boundary and wrote no live record since — the Stop nudge's purpose,
 	// at zero tokens. A record of any kind (handoff, outcome, note or
 	// decision) written by that later session clears it; all are written with
-	// the `note` tool, which is why the rendered clause says "wrote no note".
+	// the `note` tool, which is why handoff's wording says "wrote no note".
 	// Needs no about[] path.
 	FreshnessLaterUnrecordedWork FreshnessReasonKind = "later-unrecorded-work"
 )
@@ -57,21 +57,6 @@ type FreshnessReason struct {
 	// number of such sessions and the total distinct edited paths.
 	Sessions int
 	Files    int
-}
-
-// UnrecordedWorkClause is the one-clause summary of a
-// FreshnessLaterUnrecordedWork reason shared by the block, recall, export and
-// week renderers: "since then 1 session edited 2 files and wrote no note".
-func (r FreshnessReason) UnrecordedWorkClause() string {
-	return fmt.Sprintf("since then %d %s edited %d %s and wrote no note",
-		r.Sessions, pluralize(r.Sessions, "session", "sessions"), r.Files, pluralize(r.Files, "file", "files"))
-}
-
-func pluralize(n int, one, many string) string {
-	if n == 1 {
-		return one
-	}
-	return many
 }
 
 // FailureDetail is one agent failure behind a FreshnessLaterFailure reason.

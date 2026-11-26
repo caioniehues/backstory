@@ -1016,13 +1016,11 @@ func DisplayName(st *store.Store, projectKey string, workspaces []string) (strin
 	return project.WorkspaceRelativeName(proj.Toplevel, workspaces), nil
 }
 
-// failureTextMaxRunes bounds the failed command/tool text an Attention reason
-// quotes: a long command line must not blow up a one-line Needs You row.
-const failureTextMaxRunes = 60
-
 // staleHandoffItem builds the AttentionPossiblyStaleHandoff item for
 // handoffID: its reason leads with the project label (so two distinct
-// handoffs are told apart) and says what failed instead of a bare kind slug.
+// handoffs are told apart), then the status's short label
+// (hstatus.Status.Label); each detailed reason's Text is its long line
+// (hstatus.Line).
 func staleHandoffItem(st *store.Store, git project.Git, projectKey, label string, handoff store.Record, status hstatus.Status, workspaces []string) (AttentionItem, error) {
 	detail, err := staleReasons(st, git, status.Reasons, workspaces)
 	if err != nil {
@@ -1042,14 +1040,14 @@ func staleHandoffItem(st *store.Store, git project.Git, projectKey, label string
 		HandoffTime:    handoff.TS,
 		HandoffSummary: strings.TrimSpace(firstLine(handoff.Text)),
 		Reasons:        detail,
-		Reason:         label + ": handoff possibly stale — " + freshnessReasonSummary(status.Reasons),
+		Reason:         label + ": handoff possibly stale — " + status.Label(),
 		EvidenceIDs:    status.Evidence(),
 	}, nil
 }
 
 // staleReasons expands each freshness reason into a StaleReason carrying
-// when and where it happened and its full text, reading the cited records
-// and events from the store. Where is the working tree the session worked
+// when and where it happened and its long line (hstatus.Line), reading the
+// cited records and events from the store. Where is the working tree the session worked
 // in (store.SessionFolder, then project.WorkTree), workspace-relative — never the
 // project key, which for a repo is its git dir.
 func staleReasons(st *store.Store, git project.Git, reasons []store.FreshnessReason, workspaces []string) ([]StaleReason, error) {
@@ -1083,21 +1081,13 @@ func staleReasons(st *store.Store, git project.Git, reasons []store.FreshnessRea
 			if sr.Where, err = where(newest.SessionID); err != nil {
 				return nil, err
 			}
-			sr.Text = strings.TrimSpace(firstLine(newest.Text))
 			if r.Kind == store.FreshnessLaterRecord && newestOutcome.ID != "" {
-				// Name the outcome: it is what makes the handoff look finished.
+				// The outcome is what makes the handoff look finished.
 				sr.OutcomeID = newestOutcome.ID
 				sr.When = newestOutcome.TS
 				if sr.Where, err = where(newestOutcome.SessionID); err != nil {
 					return nil, err
 				}
-				sr.Text = "outcome " + shortID(newestOutcome.ID) + ": " + strings.TrimSpace(firstLine(newestOutcome.Text))
-			}
-			if r.Kind == store.FreshnessContradicted {
-				sr.Text = "contradicted by a newer record: " + sr.Text
-			}
-			if n := len(r.RecordIDs); n > 1 {
-				sr.Text += fmt.Sprintf(" (+%d more)", n-1)
 			}
 		default:
 			events, err := st.EventsByIDs(r.EventIDs)
@@ -1111,43 +1101,15 @@ func staleReasons(st *store.Store, git project.Git, reasons []store.FreshnessRea
 					return nil, err
 				}
 			}
-			switch r.Kind {
-			case store.FreshnessLaterFailure:
-				sr.Text = failureText(r.Failures)
-			case store.FreshnessLaterUnrecordedWork:
-				sr.Text = strings.TrimPrefix(r.UnrecordedWorkClause(), "since then ")
-			default:
-				n := len(r.EventIDs)
-				sr.Text = fmt.Sprintf("%d later %s touched files the handoff names", n, map[bool]string{true: "event", false: "events"}[n == 1])
-			}
 		}
+		text, err := hstatus.Line(st, r)
+		if err != nil {
+			return nil, err
+		}
+		sr.Text = text
 		out = append(out, sr)
 	}
 	return out, nil
-}
-
-// failureText is failureClause without the truncation: the full command (or
-// tool) and exit code of the most recent failure, counting the rest.
-func failureText(failures []store.FailureDetail) string {
-	if len(failures) == 0 {
-		return "a tool call failed"
-	}
-	f := failures[len(failures)-1]
-	what := f.Command
-	if what == "" {
-		what = f.Tool
-	}
-	if what == "" {
-		what = "a tool call"
-	}
-	out := what + " failed"
-	if f.Exit != nil {
-		out += fmt.Sprintf(" (exit %d)", *f.Exit)
-	}
-	if len(failures) > 1 {
-		out += fmt.Sprintf(" (+%d more)", len(failures)-1)
-	}
-	return out
 }
 
 // dedupeStaleHandoffs keeps the first AttentionPossiblyStaleHandoff item per
@@ -1164,48 +1126,6 @@ func dedupeStaleHandoffs(items []AttentionItem) []AttentionItem {
 			seen[it.HandoffID] = true
 		}
 		out = append(out, it)
-	}
-	return out
-}
-
-// freshnessReasonSummary renders reasons as a compact "; "-joined clause list
-// — This Week's form, distinct from block.staleMarker's more verbose,
-// chat-context prose. A later-failure reason names the failed command/tool
-// and its exit code.
-func freshnessReasonSummary(reasons []store.FreshnessReason) string {
-	clauses := make([]string, len(reasons))
-	for i, r := range reasons {
-		clauses[i] = string(r.Kind)
-		if r.Kind == store.FreshnessLaterFailure && len(r.Failures) > 0 {
-			clauses[i] = failureClause(r.Failures)
-		}
-		if r.Kind == store.FreshnessLaterUnrecordedWork {
-			clauses[i] = r.UnrecordedWorkClause()
-		}
-	}
-	return strings.Join(clauses, "; ")
-}
-
-// failureClause describes the most recent failure and counts the rest.
-func failureClause(failures []store.FailureDetail) string {
-	f := failures[len(failures)-1]
-	what := f.Command
-	if what == "" {
-		what = f.Tool
-	}
-	if what == "" {
-		what = "a tool call"
-	}
-	if r := []rune(what); len(r) > failureTextMaxRunes {
-		what = string(r[:failureTextMaxRunes]) + "…"
-	}
-	out := what + " failed"
-	if f.Exit != nil {
-		out += fmt.Sprintf(" (exit %d)", *f.Exit)
-	}
-	out += " after it"
-	if len(failures) > 1 {
-		out += fmt.Sprintf(" (+%d more)", len(failures)-1)
 	}
 	return out
 }

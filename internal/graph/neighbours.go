@@ -45,9 +45,10 @@ type NeighbourEdge struct {
 }
 
 // neighbours adds up to limits.Neighbours Neighbours for each seed from
-// the Searcher's Record query, which uses the seed's stored vector. The
-// walker checks each one itself, whatever the Searcher returned: at least
-// search.CosineFloor close, inside limits.Scope, and live. A Neighbour is
+// the Searcher's Record query, which uses the seed's stored vector and
+// drops every hit below the Searcher's own cosine floor. The walker checks
+// the rest itself, whatever the Searcher returned: inside limits.Scope, and
+// live. A Neighbour is
 // a new node reached from its closest seed, or joins a node already reached
 // another way by its neighbour edge alone, and it is never walked further.
 //
@@ -125,7 +126,7 @@ func (w *walker) eligible(seed string, hits []search.Hit, limits Limits) ([]sear
 			break
 		}
 		rec, ok := byID[h.RecordID]
-		if !ok || rec.ID == seed || h.Similarity < search.CosineFloor || !limits.Scope.has(rec) {
+		if !ok || rec.ID == seed || !limits.Scope.has(rec) {
 			continue
 		}
 		live, err := w.live(rec)

@@ -2,6 +2,7 @@ package graph
 
 import (
 	"context"
+	"math"
 	"sort"
 	"testing"
 	"time"
@@ -97,24 +98,46 @@ func TestWalkAddsTheTopNeighboursOfEachSeed(t *testing.T) {
 	}
 }
 
-// A Neighbour must be at least search.CosineFloor close to its seed,
-// whatever the Searcher returns.
-func TestWalkDropsNeighboursBelowTheCosineFloor(t *testing.T) {
+// stubFingerprint is the fingerprint stubEmbedder's vectors are made under.
+const stubFingerprint = "sha256:graph|tmpl1|cpu|2"
+
+// stubEmbedder is an Embedder at stubFingerprint.
+type stubEmbedder struct{}
+
+func (stubEmbedder) Fingerprint(context.Context) (string, error) { return stubFingerprint, nil }
+
+func (stubEmbedder) EmbedQuery(context.Context, string) (string, []float32, error) {
+	return stubFingerprint, []float32{1, 0}, nil
+}
+
+// embed stores vec as id's vector under stubFingerprint.
+func (f *fixture) embed(id string, vec ...float32) {
+	f.t.Helper()
+	if ok, err := f.st.UpsertRecordEmbedding(id, stubFingerprint, vec); err != nil || !ok {
+		f.t.Fatalf("UpsertRecordEmbedding(%s) = %v, %v", id, ok, err)
+	}
+}
+
+// A Neighbour is at least the Searcher's own cosine floor close to its
+// seed: one built with a floor below search.CosineFloor finds the
+// Neighbours between the two.
+func TestWalkTakesTheCosineFloorFromTheSearcher(t *testing.T) {
 	f := newFixture(t)
 	seed := f.record(store.KindDecision, "the seed")
-	atFloor := f.record(store.KindNote, "just close enough")
-	below := f.record(store.KindNote, "not close enough")
-	fake := &fakeSearcher{neighbours: map[string][]search.Hit{
-		seed: {near(atFloor, search.CosineFloor), near(below, search.CosineFloor-0.01)},
-	}}
+	above := f.record(store.KindNote, "close enough for this Searcher")
+	below := f.record(store.KindNote, "not close enough for it")
+	f.embed(seed, 1, 0)
+	f.embed(above, 0.4, float32(math.Sqrt(1-0.4*0.4)))
+	f.embed(below, 0.2, float32(math.Sqrt(1-0.2*0.2)))
 
-	g := f.walkWith(fake, f.neighbourLimits(), seed)
+	searcher := search.New(f.st, search.WithEmbedder(stubEmbedder{}), search.WithCosineFloor(0.3))
+	g := f.walkWith(searcher, f.neighbourLimits(), seed)
 
-	if want := []string{atFloor, seed}; !sameIDs(nodeIDs(g), want) {
-		t.Errorf("nodes = %v, want %v (not %s, below the floor)", nodeIDs(g), want, below)
+	if want := []string{above, seed}; !sameIDs(nodeIDs(g), want) {
+		t.Errorf("nodes = %v, want %v (%s is above the Searcher's 0.3 floor, %s below it)", nodeIDs(g), want, above, below)
 	}
-	if len(g.NeighbourEdges) != 1 || g.NeighbourEdges[0].To != atFloor {
-		t.Errorf("neighbour edges = %+v, want only the one to %s", g.NeighbourEdges, atFloor)
+	if len(g.NeighbourEdges) != 1 || g.NeighbourEdges[0].To != above {
+		t.Errorf("neighbour edges = %+v, want only the one to %s", g.NeighbourEdges, above)
 	}
 }
 

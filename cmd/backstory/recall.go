@@ -186,9 +186,10 @@ func newConfirmationsJSON(cs []store.Confirmation) []confirmationJSON {
 // ProjectKey is always set, even when Items is empty, so an empty result
 // still names the project it is honestly empty for (DONE WHEN clause 3).
 //
-// Notice is recall.Result.Notice, set only for a text anchor: the
-// latest-Handoff fallback and why the search wasn't fully semantic
-// ("embeddings off", "embeddings unavailable: daemon unreachable", ...).
+// Notice is recall.Result.Notice, set for a text or record anchor: the
+// latest-Handoff fallback, and why the search or the Neighbours weren't
+// fully semantic ("embeddings off", "embeddings unavailable: daemon
+// unreachable", ...).
 type recallOutputJSON struct {
 	ProjectKey string           `json:"project_key"`
 	Altitude   string           `json:"altitude"`

@@ -7,8 +7,9 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
-	"strings"
 	"time"
+
+	"github.com/RidgetopAi/backstory/internal/forgetting"
 )
 
 // Settings keys and defaults for automatic backups (human-only settings, like
@@ -31,12 +32,6 @@ const (
 	AutoBackupInterval     = 24 * time.Hour
 	AutoBackupFailingAfter = 48 * time.Hour
 	AutoBackupCheckEvery   = time.Hour
-
-	// BackupTimeLayout is the UTC stamp in a backup file name.
-	BackupTimeLayout = "20060102T150405Z"
-
-	autoBackupPrefix = "backstory-auto-"
-	autoBackupSuffix = ".db"
 )
 
 // AutoBackupConfig is the effective automatic-backup configuration.
@@ -50,11 +45,6 @@ type AutoBackupConfig struct {
 type AutoBackupFile struct {
 	Path string
 	At   time.Time // the UTC stamp in its name
-}
-
-// AutoBackupName is the file name of an automatic backup made at t.
-func AutoBackupName(t time.Time) string {
-	return autoBackupPrefix + t.UTC().Format(BackupTimeLayout) + autoBackupSuffix
 }
 
 // AutoBackupConfig reads the settings; defaultDir is used when backup_dir is
@@ -95,12 +85,8 @@ func ListAutoBackups(dir string) ([]AutoBackupFile, error) {
 	var out []AutoBackupFile
 	for _, e := range ents {
 		name := e.Name()
-		if e.IsDir() || !strings.HasPrefix(name, autoBackupPrefix) || !strings.HasSuffix(name, autoBackupSuffix) {
-			continue
-		}
-		stamp := strings.TrimSuffix(strings.TrimPrefix(name, autoBackupPrefix), autoBackupSuffix)
-		at, perr := time.Parse(BackupTimeLayout, stamp)
-		if perr != nil {
+		at, ok := forgetting.AutoBackupAt(name)
+		if e.IsDir() || !ok {
 			continue
 		}
 		out = append(out, AutoBackupFile{Path: filepath.Join(dir, name), At: at})
@@ -133,7 +119,7 @@ func (s *Store) AutoBackupCheck(now time.Time, defaultDir string) (string, error
 	}
 	written := ""
 	if len(files) == 0 || now.Sub(files[0].At) >= AutoBackupInterval {
-		dest := filepath.Join(cfg.Dir, AutoBackupName(now))
+		dest := filepath.Join(cfg.Dir, forgetting.AutoBackupName(now))
 		if _, err := s.Backup(dest, false); err != nil {
 			return "", err
 		}

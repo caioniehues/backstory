@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/RidgetopAi/backstory/internal/forgetting"
 )
 
 // BackupDirMode and BackupFileMode are the modes a backup directory the
@@ -149,21 +151,18 @@ func (s *Store) vacuumIntoPrivate(path string) error {
 	return nil
 }
 
-// preCopyGlob matches the safety copies the store writes beside itself
-// (.pre-rehome-, .pre-sweep-, .pre-identity-, .pre-restore-).
-const preCopyGlob = ".pre-*"
-
-// tightenPreCopies chmods any pre-existing safety copy beside the store that
-// is readable by group/other to BackupFileMode, logging each change. Copies
-// written by older versions took the process umask. Best effort: a failure
-// is logged, never fatal to Open.
+// tightenPreCopies chmods any pre-existing safety copy beside the store (a
+// pre-copy, as forgetting names them) that is readable by group/other to
+// BackupFileMode, logging each change. Copies written by older versions took
+// the process umask. Best effort: a failure is logged, never fatal to Open.
 func tightenPreCopies(path string) {
-	matches, err := filepath.Glob(filepath.Join(filepath.Dir(path), filepath.Base(path)+preCopyGlob))
+	copies, err := forgetting.Set{DBPath: path}.Copies()
 	if err != nil {
 		return
 	}
-	for _, m := range matches {
-		fi, err := os.Lstat(m)
+	for _, c := range copies {
+		m := c.Path
+		fi, err := os.Lstat(m) // Copies saw a regular file; it may have changed since
 		if err != nil || !fi.Mode().IsRegular() || fi.Mode().Perm()&^BackupFileMode == 0 {
 			continue
 		}

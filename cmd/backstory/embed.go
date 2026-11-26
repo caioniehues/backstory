@@ -153,16 +153,16 @@ func embedOn(st *store.Store, runtime, model, device string, allowCPU bool, stdo
 		return refuse(err)
 	}
 
-	hash, err := embed.ModelHash(st, s.Model)
+	dev := b.Device()
+	fp, err := embed.FingerprintFor(st, s.Model, dev)
 	if err != nil {
 		return refuse(err)
 	}
 	if err := embed.SaveSetup(st, s); err != nil {
 		return refuse(err)
 	}
-	dev := b.Device()
 	_, _ = fmt.Fprintf(stdout, "embeddings on: %s (%s)\nfingerprint: %s\nthe daemon embeds Records in the background\n",
-		dev.Name, s.Device, embed.Fingerprint(hash, dev.Backend, embed.Dim))
+		dev.Name, s.Device, fp)
 	return 0
 }
 
@@ -329,17 +329,7 @@ func embeddingsStatus(st *store.Store) (string, bool) {
 		return "", false
 	}
 	return fmt.Sprintf("embeddings: on (%s), %d embedded, %d queued, %d skipped%s",
-		shortFingerprint(r.Fingerprint), c.Embedded, c.Queued, r.Skipped, failure), true
-}
-
-// shortFingerprint cuts the model hash, the fingerprint's first part, to 8
-// characters: "2188ac1d|tpl-ecc4bd80|vulkan|768".
-func shortFingerprint(fp string) string {
-	hash, rest, ok := strings.Cut(fp, "|")
-	if ok && len(hash) > 8 {
-		return hash[:8] + "|" + rest
-	}
-	return fp
+		embed.ShortFingerprint(r.Fingerprint), c.Embedded, c.Queued, r.Skipped, failure), true
 }
 
 // oneLine folds a multi-line message (a refusal that lists the devices)

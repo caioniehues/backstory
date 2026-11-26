@@ -17,6 +17,7 @@ import (
 	"github.com/RidgetopAi/backstory/internal/ident"
 	"github.com/RidgetopAi/backstory/internal/payload"
 	"github.com/RidgetopAi/backstory/internal/project"
+	"github.com/RidgetopAi/backstory/internal/shellcmd"
 	"github.com/RidgetopAi/backstory/internal/store"
 	bsync "github.com/RidgetopAi/backstory/internal/sync"
 )
@@ -814,7 +815,7 @@ type failure struct {
 // event with a non-zero exit, or a tool.result that is_error or carries a
 // non-zero exit (its command is read back from the matching tool.use). A
 // later result for the same subject clears it: the same Bash command (by
-// commandKey, so `-v` or a piped `| tail` does not make it a different one), or
+// shellcmd.Key, so `-v` or a piped `| tail` does not make it a different one), or
 // the same tool and path, coming back as a non-error tool.result or a shell
 // event with exit 0. A different command passing says nothing about the one
 // that failed, so it clears nothing.
@@ -838,7 +839,7 @@ func lastFailure(events []store.TimelineEvent) failure {
 		case payload.KindToolUse:
 			var tu payload.ToolUse
 			if json.Unmarshal([]byte(e.Payload), &tu) == nil && tu.ToolUseID != "" {
-				sub := subject{cmd: tu.Command, key: "cmd:" + commandKey(tu.Command)}
+				sub := subject{cmd: tu.Command, key: "cmd:" + shellcmd.Key(tu.Command)}
 				if tu.Command == "" {
 					sub.cmd = tu.Name
 					sub.key = "tool:" + tu.Name + ":" + tu.Path
@@ -853,7 +854,7 @@ func lastFailure(events []store.TimelineEvent) failure {
 			sub, known := toolSubject[tr.ToolUseID]
 			failed := tr.IsError || (tr.Exit != nil && *tr.Exit != 0)
 			if !failed {
-				if known && !exitUnobserved(sub.cmd) {
+				if known && !shellcmd.ExitUnobserved(sub.cmd) {
 					clear(sub.key)
 				}
 				continue
@@ -873,9 +874,9 @@ func lastFailure(events []store.TimelineEvent) failure {
 			if json.Unmarshal([]byte(e.Payload), &sc) != nil {
 				continue
 			}
-			key := "cmd:" + commandKey(sc.Cmd)
+			key := "cmd:" + shellcmd.Key(sc.Cmd)
 			if sc.Exit == 0 {
-				if !exitUnobserved(sc.Cmd) {
+				if !shellcmd.ExitUnobserved(sc.Cmd) {
 					clear(key)
 				}
 				continue

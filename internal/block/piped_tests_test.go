@@ -57,7 +57,7 @@ func TestMultiLineCommandGetsTestsLine(t *testing.T) {
 	}
 }
 
-// The failure and the later piped exit 0 share a commandKey, so the failure
+// The failure and the later piped exit 0 share a shellcmd.Key, so the failure
 // is a clearing candidate: only the unobserved-exit guard keeps it open.
 func TestSamePipedCommandExitZeroDoesNotClearItsOwnFailure(t *testing.T) {
 	out := renderAfterHandoff(t, func(s func(string, any)) {

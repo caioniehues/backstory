@@ -35,11 +35,17 @@ func HandoffHome(cwd, ownKey string, workspaces []string) string {
 // belongs to home: the Sessions whose activity a Handoff filed under home is
 // judged against (Possibly stale) and whose Work locations a Workspace row
 // lists. Those are the Sessions whose own key is home, and, when home is a
-// Workspace, every Session whose folder is in it at any depth, whatever its
-// own key. Every Session belongs to its own HandoffHome.
-func InHome(home, cwd, ownKey string, workspaces []string) bool {
+// Workspace, every Session recorded on this Device whose folder is in it at
+// any depth, whatever its own key. peer is true for a Session recorded on a
+// Peer (origin_device set): its cwd is a path on the Peer, so it joins only
+// by its own key. Every Session on this Device belongs to its own
+// HandoffHome.
+func InHome(home, cwd, ownKey string, peer bool, workspaces []string) bool {
 	if ownKey == home {
 		return true
+	}
+	if peer {
+		return false
 	}
 	ws, ok := WorkspaceHome(cwd, workspaces)
 	return ok && ws == home

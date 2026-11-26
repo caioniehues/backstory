@@ -288,7 +288,7 @@ func (s *Store) sessionsForHome(homeKey string, workspaces []string) ([]Session,
 		if err != nil {
 			return nil, fmt.Errorf("store: sessions for home %s: %w", homeKey, err)
 		}
-		if project.InHome(homeKey, sess.CWD, sess.ProjectKey, workspaces) {
+		if project.InHome(homeKey, sess.CWD, sess.ProjectKey, false, workspaces) {
 			out = append(out, sess)
 		}
 	}

@@ -24,8 +24,10 @@ const ServerBinary = "llama-server"
 // Query server tunables. Named here, never inlined.
 const (
 	// SetupPoll is how often the query server re-reads the setup, so that
-	// `embed --on` starts the server and `--off` stops it.
-	SetupPoll = 15 * time.Second
+	// `embed --on` starts the server and `--off` stops it, freeing the GPU,
+	// within about a second. A read is three settings rows, cheap enough
+	// to do this often.
+	SetupPoll = time.Second
 	// ServerStartTimeout bounds a start, from exec to /health answering OK.
 	// #19 measured ready in about 0.33 s; a first run on a cold shader cache
 	// takes longer.

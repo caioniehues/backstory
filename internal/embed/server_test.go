@@ -354,6 +354,31 @@ func TestQueryServerFollowsEmbedOnAndOff(t *testing.T) {
 	waitEmbed(t, q, "on again")
 }
 
+// offStopsWithin is how soon `embed --off` must stop the warm server, with
+// the default setup poll: the GPU is freed within a couple of seconds.
+const offStopsWithin = 2 * time.Second
+
+// With the default poll, `embed --off` stops the server's GPU work within
+// a couple of seconds, not at the next slow poll.
+func TestQueryServerStopsPromptlyOnEmbedOff(t *testing.T) {
+	e := newServerEnv(t, "AMD Radeon RX 7800 XT")
+	q := embed.StartQueryServer(embed.QueryServerConfig{Settings: e.settings, Socket: e.socket})
+	t.Cleanup(q.Close)
+	waitEmbed(t, q, "on")
+	pid := serverPID(t, e)
+
+	if err := embed.TurnOff(e.settings); err != nil {
+		t.Fatal(err)
+	}
+	off := time.Now()
+	for alive(pid) {
+		if time.Since(off) > offStopsWithin {
+			t.Fatalf("the server still runs %v after embed --off; want it stopped within %v", time.Since(off), offStopsWithin)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 // A changed setup restarts the server under it, with its fingerprint.
 func TestQueryServerRestartsOnASetupChange(t *testing.T) {
 	e := newServerEnv(t, "AMD Radeon RX 7800 XT")

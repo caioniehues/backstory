@@ -199,7 +199,7 @@ func (s *Store) SessionTree(git project.Git, sessionID string) (string, error) {
 }
 
 // sessionColumns are the sessions columns scanSession reads, in its order.
-const sessionColumns = `id, agent, harness_session_id, pid, cwd, project_key, workspace, window, started_at, origin`
+const sessionColumns = `id, agent, harness_session_id, pid, cwd, project_key, workspace, window, started_at, origin, origin_device`
 
 // getSession reads back a single sessions row by id, the shared scan logic
 // LatestSessionForProject uses.
@@ -221,9 +221,10 @@ func scanSession(sc interface{ Scan(...any) error }) (Session, error) {
 		workspace, window sql.NullString
 		startedAt         int64
 		origin            string
+		originDevice      sql.NullString
 	)
 	if err := sc.Scan(&sess.ID, &sess.Agent, &harnessSessionID, &pid, &sess.CWD,
-		&projectKey, &workspace, &window, &startedAt, &origin); err != nil {
+		&projectKey, &workspace, &window, &startedAt, &origin, &originDevice); err != nil {
 		return Session{}, err
 	}
 	sess.HarnessSessionID = harnessSessionID.String
@@ -236,6 +237,7 @@ func scanSession(sc interface{ Scan(...any) error }) (Session, error) {
 	sess.Window = window.String
 	sess.StartedAt = tsFromNanos(startedAt)
 	sess.Origin = SessionOrigin(origin)
+	sess.OriginDevice = originDevice.String
 	return sess, nil
 }
 

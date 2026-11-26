@@ -190,8 +190,9 @@ func (s *Store) RecordsForLocation(ls LocationScope, limit int) ([]Record, error
 
 // locationMatcher is the ONE membership rule for "does this session belong
 // to location L": the session is filed under the location's own repo key,
-// or its observed work-location labels (sessionLabels) include the
-// location's label. LocationScope (every record/session reader and purge)
+// or, for a session recorded on this Device, its observed work-location
+// labels (sessionLabels) include the location's label. A Peer's session
+// joins only by its key (#5). LocationScope (every record/session reader and purge)
 // and Handoffs (the Resume handoff's candidates) both
 // decide through it, so no two surfaces can disagree about which handoff
 // belongs to a location (task ed31b744).
@@ -203,6 +204,11 @@ type locationMatcher struct {
 func (s *Store) sessionInLocation(m locationMatcher, sess Session, git project.Git, workspaces []string) (bool, error) {
 	if m.repoKey != "" && s.canonicalizeProjectKey(sess.ProjectKey) == m.repoKey {
 		return true, nil
+	}
+	if sess.OriginDevice != "" {
+		// A Peer's session joins only by its own key: its folder and the
+		// files it touched are paths on the Peer (#5).
+		return false, nil
 	}
 	labels, err := s.sessionLabels(sess, git, workspaces)
 	if err != nil {

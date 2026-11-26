@@ -79,6 +79,10 @@ type Session struct {
 	StartedAt        time.Time
 	Origin           SessionOrigin
 	ParentSessionID  string
+	// OriginDevice is the Peer the session was recorded on, "" for this
+	// Device. A Peer's cwd is a path on the Peer, so such a session joins a
+	// Workspace or a location only by its own key (#5).
+	OriginDevice string
 }
 
 // LiveSessionsInProject returns every live session in projectKey (origin

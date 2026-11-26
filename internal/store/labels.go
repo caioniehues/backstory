@@ -248,9 +248,10 @@ func (s *Store) sessionLastActivity(sess Session, asOf time.Time) (time.Time, bo
 
 // sessionsForHome returns every session that belongs to homeKey
 // (project.InHome, the one home rule): those whose own project_key is homeKey,
-// and, for a Workspace's key, every session whose folder is in it at any
-// depth. That is the membership HandoffFreshness's home-scoped queries and
-// This Week's Workspace labels need (decision f3fa04c7), which can span many
+// and, for a Workspace's key, every session recorded on this Device whose
+// folder is in it at any depth (a Peer's joins only by its key, #5). That is
+// the membership HandoffFreshness's home-scoped queries and This Week's
+// Workspace labels need (decision f3fa04c7), which can span many
 // distinct project_key values (one per repo under a Workspace), and it always
 // includes every session whose own Handoffs are filed under homeKey (decision
 // dc0a4387, #5). Order is unspecified; callers care about membership, not
@@ -288,7 +289,7 @@ func (s *Store) sessionsForHome(homeKey string, workspaces []string) ([]Session,
 		if err != nil {
 			return nil, fmt.Errorf("store: sessions for home %s: %w", homeKey, err)
 		}
-		if project.InHome(homeKey, sess.CWD, sess.ProjectKey, false, workspaces) {
+		if project.InHome(homeKey, sess.CWD, sess.ProjectKey, sess.OriginDevice != "", workspaces) {
 			out = append(out, sess)
 		}
 	}

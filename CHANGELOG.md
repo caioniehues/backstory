@@ -14,6 +14,7 @@ See `RELEASING.md` for the release flow and its approval gates.
 ### Changed
 
 - A possibly stale handoff's reasons read the same everywhere (#2). The session-start block's marker, `recall`'s status and This Week's Needs You reason all give one short clause per reason, e.g. `cargo test failed (exit 101) after it; 2 later edits to files it names`, where before the block counted "later non-zero exit(s)", `recall` printed kind slugs (`later-failure (ids 12)`) and This Week printed slugs for every reason but a failure. The block and `recall` then cite the evidence as `(evidence <ids>)`. In `this-week --json`, a `later-activity` reason's `text` is now `a later edit to a file the handoff names` (was `1 later event touched files the handoff names`) and a `contradicted` one starts `contradicted by a later record: `.
+- A session recorded on a paired computer counts for a workspace, or a folder in one, only through its own project (#5). Before, one whose folder had the same path as a folder in a workspace here (two computers with the same layout) also counted there by that path: it could make a workspace handoff Possibly stale, add a folder row under the workspace in This Week, and fall inside `recall`, `export`, `records` and `purge` for that folder. Its own project's rows and scopes still include it.
 
 ### Fixed
 

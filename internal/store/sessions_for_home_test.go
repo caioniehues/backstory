@@ -63,13 +63,22 @@ func sameNames(a, b []string) bool {
 	return true
 }
 
+// markPeerSession records session id as a Peer's (origin_device set).
+func markPeerSession(t *testing.T, s *Store, id string) {
+	t.Helper()
+	if _, err := s.DB().Exec(`UPDATE sessions SET origin_device = 'dev-peer' WHERE id = ?`, id); err != nil {
+		t.Fatalf("mark %s a Peer's: %v", id, err)
+	}
+}
+
 // TestSessionsForHomeMembership pins which sessions belong to a home
-// (project.InHome): the enclosing workspace when a session's folder is inside
-// one, at any depth and however the path is spelled — and, either way, the
-// home its own project_key names, where a repo under a workspace files its
+// (project.InHome): for a session on this Device, the enclosing workspace
+// when its folder is inside one, at any depth and however the path is
+// spelled — and, either way, the home its own project_key names, where a repo under a workspace files its
 // handoffs (decision dc0a4387). sessionsForHome may narrow what it reads from
 // the database, but never this answer: every session is also in the home its
-// own Handoffs are filed under (project.HandoffHome, #5).
+// own Handoffs are filed under (project.HandoffHome, #5). A Peer's session
+// joins only the home its own key names (#5).
 func TestSessionsForHomeMembership(t *testing.T) {
 	s := mustOpen(t, filepath.Join(t.TempDir(), "backstory.db"))
 	ws := "/srv/ws"
@@ -90,17 +99,27 @@ func TestSessionsForHomeMembership(t *testing.T) {
 		{"ws-key-outside", "/tmp/moved", wsKey},
 		{"ws-lookalike", "/srv/ws-other/g", "/srv/ws-other/g/.git"},
 		{"ws-deep-plain", ws + "/h/i", ws + "/h/i"},
+		{"peer-in-ws-repo", ws + "/p", "/srv/ws/p/.git"},
+		{"peer-ws-root", ws, wsKey},
 	}
 	ids := homeFixture(t, s, rows)
+	peers := map[string]bool{"peer-in-ws-repo": true, "peer-ws-root": true}
+	for name := range peers {
+		markPeerSession(t, s, ids[name])
+	}
 
 	cases := []struct {
 		home string
 		want []string
 	}{
 		{repo, []string{"repo-key-but-in-ws", "repo-own"}},
-		{wsKey, []string{"repo-key-but-in-ws", "ws-deep", "ws-deep-plain", "ws-dot", "ws-dotdot", "ws-double-slash", "ws-key-outside", "ws-root", "ws-trailing-slash"}},
+		{wsKey, []string{"peer-ws-root", "repo-key-but-in-ws", "ws-deep", "ws-deep-plain", "ws-dot", "ws-dotdot", "ws-double-slash", "ws-key-outside", "ws-root", "ws-trailing-slash"}},
+		{"/srv/ws/p/.git", []string{"peer-in-ws-repo"}},
 	}
 	for _, r := range rows {
+		if peers[r[0]] {
+			continue // a Peer files its own Handoffs
+		}
 		home := project.HandoffHome(r[1], r[2], workspaces)
 		got, err := s.sessionsForHome(home, workspaces)
 		if err != nil {
@@ -117,6 +136,33 @@ func TestSessionsForHomeMembership(t *testing.T) {
 		}
 		if names := namesOf(t, ids, got); !sameNames(names, c.want) {
 			t.Errorf("sessionsForHome(%s) = %v; want %v", c.home, names, c.want)
+		}
+	}
+}
+
+// A Peer's session whose folder spells a local Workspace folder's path is not
+// in that location by its folder: it joins a location only by its own key
+// (#5). The same session on this Device is.
+func TestLocationScopeTakesAPeersSessionOnlyByItsKey(t *testing.T) {
+	s := mustOpen(t, filepath.Join(t.TempDir(), "backstory.db"))
+	ws := "/srv/ws"
+	workspaces := []string{ws}
+	notes := ws + "/group/notes"
+	ids := homeFixture(t, s, [][3]string{
+		{"local", notes, notes},
+		{"peer", notes, "/peer/elsewhere"},
+		{"peer-own-key", "/peer/notes", notes},
+	})
+	markPeerSession(t, s, ids["peer"])
+	markPeerSession(t, s, ids["peer-own-key"])
+
+	ls, err := s.LocationScope(notes, fakeSweepGit{}, workspaces)
+	if err != nil {
+		t.Fatalf("LocationScope: %v", err)
+	}
+	for name, want := range map[string]bool{"local": true, "peer": false, "peer-own-key": true} {
+		if got := ls.SessionIDs[ids[name]]; got != want {
+			t.Errorf("%s in the scope of %s = %v, want %v", name, notes, got, want)
 		}
 	}
 }

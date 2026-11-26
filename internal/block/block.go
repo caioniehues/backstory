@@ -325,7 +325,7 @@ func resumeSlot(rec store.Record, ok bool, status hstatus.Status, label, authorC
 	if label != "" {
 		line += "\nLocation: " + label
 	}
-	if marker := staleMarker(status.Reasons); marker != "" {
+	if marker := staleMarker(status); marker != "" {
 		line += "\n" + marker
 	}
 	return line
@@ -651,38 +651,16 @@ func projectPointerLine(st *store.Store, others []store.Record, git project.Git,
 }
 
 // staleMarker renders the Resume slot's possibly-stale marker (decision
-// bcc9fa54, AGENT-CONTRACT.md §The SessionStart block): a short clause per
-// store.FreshnessReason plus the evidence ids it cites, e.g. "⚠ possibly
-// stale: 3 later edits to files it names (ids 12,13,14)". Empty when reasons
-// is empty — a fresh (or non-handoff-shaped) resume slot renders exactly as
-// it did before this marker existed.
-func staleMarker(reasons []store.FreshnessReason) string {
-	if len(reasons) == 0 {
+// bcc9fa54, AGENT-CONTRACT.md §The SessionStart block): the status's short
+// label (hstatus.Status.Label) and the Evidence it cites, e.g. "⚠ possibly
+// stale: 3 later edits to files it names (evidence 12,13,14)". Empty when
+// the handoff is not Possibly stale — a fresh (or non-handoff-shaped) resume
+// slot renders exactly as it did before this marker existed.
+func staleMarker(status hstatus.Status) string {
+	if !status.PossiblyStale() {
 		return ""
 	}
-	clauses := make([]string, len(reasons))
-	for i, r := range reasons {
-		clauses[i] = staleReasonClause(r)
-	}
-	return "⚠ possibly stale: " + strings.Join(clauses, "; ")
-}
-
-func staleReasonClause(r store.FreshnessReason) string {
-	idList := strings.Join(hstatus.Evidence(r), ",")
-	switch r.Kind {
-	case store.FreshnessContradicted:
-		return fmt.Sprintf("contradicted (ids %s)", idList)
-	case store.FreshnessLaterRecord:
-		return fmt.Sprintf("%d later record(s) share a path it names (ids %s)", len(r.RecordIDs), idList)
-	case store.FreshnessLaterActivity:
-		return fmt.Sprintf("%d later edit(s) to files it names (ids %s)", len(r.EventIDs), idList)
-	case store.FreshnessLaterFailure:
-		return fmt.Sprintf("%d later non-zero exit(s) (ids %s)", len(r.EventIDs), idList)
-	case store.FreshnessLaterUnrecordedWork:
-		return r.UnrecordedWorkClause()
-	default:
-		return fmt.Sprintf("%s (ids %s)", r.Kind, idList)
-	}
+	return "⚠ possibly stale: " + status.Label() + " (evidence " + strings.Join(status.Evidence(), ",") + ")"
 }
 
 // deltaSlot is the Delta line of slot 2: sessions and distinct files

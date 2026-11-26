@@ -37,7 +37,7 @@ func TestPossiblyStaleOnLaterNonZeroExit(t *testing.T) {
 	id := mustAppendEvent(t, st, self, payload.KindToolResult, handoff.TS.Add(time.Second),
 		payload.ToolResult{ToolUseID: "t1", IsError: true, Exit: &exit1})
 	out := mustRender(t, st, fakeProcFS{}, self)
-	if !strings.Contains(out, "⚠ possibly stale:") || !strings.Contains(out, "later non-zero exit(s) (ids "+strconv.FormatInt(id, 10)+")") {
+	if !strings.Contains(out, "⚠ possibly stale:") || !strings.Contains(out, "⚠ possibly stale: a tool call failed (exit 1) after it (evidence "+strconv.FormatInt(id, 10)+")") {
 		t.Errorf("failing exit after handoff must mark it possibly stale citing event %d:\n%s", id, out)
 	}
 

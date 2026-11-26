@@ -21,6 +21,7 @@ import (
 	"github.com/RidgetopAi/backstory/internal/payload"
 	"github.com/RidgetopAi/backstory/internal/project"
 	"github.com/RidgetopAi/backstory/internal/store"
+	"github.com/RidgetopAi/backstory/internal/tooluse"
 )
 
 const (
@@ -385,7 +386,8 @@ func sessionStartPayload(order []treeLine) string {
 	return string(b)
 }
 
-// appendToolEvents emits one tool.use per toolCall block and one
+// appendToolEvents emits one tool.use per toolCall block (shaped by
+// tooluse.Pi, the normaliser Pi's live hook uses too) and one
 // tool.result per toolResult line, walking lines in tree order (walkOrder's
 // output, never file order). A toolResult is paired with its toolCall
 // exclusively by id (block.ID / line.ToolCallID) — DONE WHEN clause 3 and
@@ -419,7 +421,7 @@ func appendToolEvents(st *store.Store, sessionID string, lines []treeLine) (int,
 						continue
 					}
 				}
-				payloadBytes, err := json.Marshal(toolUsePayload(b.ID, b.Name))
+				payloadBytes, err := json.Marshal(tooluse.Pi(b.ID, b.Name, b.Arguments))
 				if err != nil {
 					return n, err
 				}
@@ -460,19 +462,6 @@ func appendToolEvents(st *store.Store, sessionID string, lines []treeLine) (int,
 		}
 	}
 	return n, nil
-}
-
-// toolUsePayload builds one toolCall block's payload. Path/Command are left
-// unset: unlike Claude's tool_use.input (a documented, stable field set —
-// file_path, command), Pi's toolCall.arguments shape is per-tool and not
-// part of this punch's field list; guessing a field name here risks
-// silently wrong data once a real transcript shows up. This importer is
-// provider-agnostic by construction (name/arguments are read the same way
-// regardless of which provider or model produced the call, so a
-// local-llama transcript imports identically to a hosted one — DONE WHEN
-// clause 3).
-func toolUsePayload(id, name string) payload.ToolUse {
-	return payload.ToolUse{ToolUseID: id, Name: name}
 }
 
 // truncateRunes cuts s to at most max runes, appending an ellipsis when it

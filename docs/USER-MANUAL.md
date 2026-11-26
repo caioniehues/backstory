@@ -732,7 +732,8 @@ sync. Record text reaches the runtime only over stdin: it never goes on a comman
 a temporary file.
 
 Once embeddings are on, the background service embeds every Decision, Outcome, Handoff and Note
-that has no vector yet, superseded ones, Drafts and Records from paired machines included. It
+that has no vector yet, superseded ones, Drafts and Records from your Peers (the Devices you sync
+with) included. It
 starts when the service starts, a couple of seconds after a Record it writes itself, and once a
 minute for Records the command line or Sync wrote. It works in batches of 64 and never makes a
 write wait. Pausing capture doesn't stop it; `--off` does. If the runtime fails it waits and

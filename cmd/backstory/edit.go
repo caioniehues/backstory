@@ -26,8 +26,9 @@ const maxSupersedeChain = 1000
 // so an edit writes ONE new human-declared record plus a supersedes edge
 // new→old, in one transaction; the old row is never touched (decision
 // 02c511b3 D2). Its text and Tier are new; it keeps the original's kind,
-// about and location (project_key and writing Session, which decide where it
-// is read, #51). Like delete, it opens the store directly and attributes the write to
+// about, location (project_key and writing Session, which decide where it is
+// read, #51), its stamp at write (git_head, git_branch) and its next step.
+// Like delete, it opens the store directly and attributes the write to
 // humanIdentity.
 func runEdit(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	idArg, file, useStdin, err := parseEditArgs(args)
@@ -113,6 +114,9 @@ func runEdit(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		About:      old.About,
 		SessionID:  old.SessionID,
 		ProjectKey: old.ProjectKey,
+		GitHead:    old.GitHead,
+		GitBranch:  old.GitBranch,
+		Next:       old.Next,
 	}, []store.EdgeSpec{{
 		OtherID:    old.ID,
 		Type:       store.EdgeSupersedes,

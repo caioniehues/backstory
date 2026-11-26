@@ -153,3 +153,76 @@ func TestEditKeepsAWorkspaceHandoffAtItsLocation(t *testing.T) {
 		})
 	}
 }
+
+// An edit's replacement stays on its original's branch (#51), with the
+// original's stamp at write (git_head) and its next step: a reader on another
+// branch keeps resuming that branch's Handoff, and a reader on the
+// original's branch resumes the replacement, its next step and the commits
+// since the original was written.
+func TestEditKeepsTheHandoffOnItsBranch(t *testing.T) {
+	home := t.TempDir()
+	repo := filepath.Join(home, "code", "repo")
+	if err := os.MkdirAll(repo, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	dataDir := t.TempDir()
+	dbPath := filepath.Join(dataDir, "backstory", "backstory.db")
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", dataDir)
+	ws := filepath.Join(home, "projects")
+	t.Setenv("BACKSTORY_WORKSPACE_DIRS", ws)
+	workspaces := []string{ws}
+
+	gitIn(t, repo, "init", "-q", "-b", "main")
+	gitIn(t, repo, "commit", "-q", "--allow-empty", "-m", "base")
+	headMain := gitIn(t, repo, "rev-parse", "HEAD")
+	gitIn(t, repo, "checkout", "-q", "-b", "feature-a")
+	gitIn(t, repo, "commit", "-q", "--allow-empty", "-m", "feat 1")
+	headFeat := gitIn(t, repo, "rev-parse", "HEAD")
+
+	st, err := store.Open(dbPath, workspaces, project.RealGit{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := project.Key(repo, project.RealGit{}, workspaces)
+	if err := st.UpsertProject(store.Project{Key: key, Toplevel: repo, FirstSeen: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	handoff := func(text, branch, head, next string) string {
+		id, err := st.InsertRecord(store.InsertRecordParams{
+			Identity: store.Identity{Kind: store.IdentityAgent}, Kind: store.KindHandoff,
+			Text: text, ProjectKey: key, GitBranch: branch, GitHead: head, Next: next,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	mainID := handoff("MAIN handoff", "main", headMain, "")
+	time.Sleep(5 * time.Millisecond)
+	featID := handoff("FEATURE handoff", "feature-a", headFeat, "run the feature tests")
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, repo, "commit", "-q", "--allow-empty", "-m", "feat 2")
+
+	newID := runEditStdin(t, featID, "FEATURE handoff, corrected\n")
+
+	gitIn(t, repo, "checkout", "-q", "main")
+	if blk := renderBlockAt(t, dbPath, repo, workspaces); !strings.Contains(blk, "Resume: (id "+mainID+")") {
+		t.Errorf("block on main = %q, want Resume of main's %s, not the feature-a replacement %s", blk, mainID, newID)
+	}
+
+	gitIn(t, repo, "checkout", "-q", "feature-a")
+	blk := renderBlockAt(t, dbPath, repo, workspaces)
+	for _, want := range []string{
+		"Resume: (id " + newID + ")",
+		"FEATURE handoff, corrected",
+		"Next (start here): run the feature tests",
+		"1 commit since the handoff",
+	} {
+		if !strings.Contains(blk, want) {
+			t.Errorf("block on feature-a lacks %q:\n%s", want, blk)
+		}
+	}
+}

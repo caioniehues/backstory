@@ -439,6 +439,14 @@ backstory delete 3947dcca          # asks you to confirm
 backstory delete 3947dcca --yes    # no question
 ```
 
+A Delete changes only the live store: the record is Tombstoned there (its text is gone and it
+never comes back), and no backup is touched. **A deleted record's text stays in every backup
+and `.pre-` copy made before the Delete** until those are purged or rotated out. The command
+that reaches them is [`backstory purge`](#purge): a Purge that forgets anything also deletes every
+backup Backstory made and every `.pre-` copy beside the store, then takes a fresh backup. An
+automatic backup also goes once it rotates out (`backup auto --keep`); manual backups and
+`.pre-` copies never rotate out.
+
 Run from inside an agent's shell (Claude Code, Codex, Hermes, pi or opencode, told apart by the
 variables they set), `delete`, `purge` and `restore` ignore `--yes` and ask on the terminal itself, not
 on their input, so piping `yes` into them does not answer. An agent's shell usually has no
@@ -506,6 +514,12 @@ one row the panel shows for that folder. A session counts for the folder it star
 every folder it edited, so forgetting a folder includes the records of sessions that started
 there, even if they only edited files elsewhere. `--yes` skips the confirmation, except inside
 an agent's shell (see [delete](#delete)).
+
+A Purge that forgets anything also deletes the backups Backstory made, and any
+`.backstory-backup-….tmp` or `.backstory-restore-….tmp` file a backup or restore that was
+stopped mid-write left in the backup folder or beside the store. Such a file is only touched
+once it is more than an hour old, so a backup still being written is never deleted. `--dry-run`
+lists both. See [Deleted text and backups](#7-privacy-pausing-fixing-and-forgetting).
 
 ### capture
 
@@ -849,10 +863,14 @@ hook, which narrowing `PostToolUse` does not narrow, so set its `matcher` too. I
 earlier still hold it. A purge cleans up after itself: once the text is erased it also deletes
 the backups Backstory made (the automatic and manual ones in the backup folder, and the
 `backstory.db.pre-…` copies beside the store), then takes one fresh backup so you are never
-left with none. `backstory purge --dry-run` lists those files, with dates and sizes, before
-anything is deleted. Copies you put somewhere else, such as `backstory backup --out`, are yours
-to delete: purge never touches them and says so. Deleting a single record does not remove
-backups.
+left with none. It also deletes any temporary file a backup or restore that was stopped
+mid-write left in those two folders (`.backstory-backup-….tmp`, `.backstory-restore-….tmp`),
+once that file is more than an hour old. `backstory purge --dry-run` lists those files, with
+dates and sizes, before anything is deleted. Copies you put somewhere else, such as
+`backstory backup --out`, are yours to delete: purge never touches them and says so. A Delete
+of a single record does not remove backups: its text stays in the backups and `.pre-` copies
+made before it until a `backstory purge` deletes them or an automatic backup rotates out (see
+[delete](#delete)).
 
 **Forgetting reaches your other machines.** If you have paired machines, what you delete or
 purge here is forgotten on them at the next sync, and a sync can never bring it back.

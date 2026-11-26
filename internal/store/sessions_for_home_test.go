@@ -55,7 +55,8 @@ func sameNames(a, b []string) bool {
 // TestSessionsForHomeMembership pins which sessions belong to a home
 // (sessionHomeKey): the enclosing workspace when a session's folder is inside
 // one, at any depth and however the path is spelled, else its own
-// project_key. sessionsForHome may narrow what it reads from the database,
+// project_key — and, either way, the home its own project_key names, where a
+// repo under a workspace files its handoffs (decision dc0a4387). sessionsForHome may narrow what it reads from the database,
 // but never this answer.
 func TestSessionsForHomeMembership(t *testing.T) {
 	s := mustOpen(t, filepath.Join(t.TempDir(), "backstory.db"))
@@ -82,7 +83,7 @@ func TestSessionsForHomeMembership(t *testing.T) {
 		home string
 		want []string
 	}{
-		{repo, []string{"repo-own"}},
+		{repo, []string{"repo-key-but-in-ws", "repo-own"}},
 		{wsKey, []string{"repo-key-but-in-ws", "ws-deep", "ws-dot", "ws-dotdot", "ws-double-slash", "ws-key-outside", "ws-root", "ws-trailing-slash"}},
 	}
 	for _, c := range cases {

@@ -227,13 +227,12 @@ BEGIN
   SELECT RAISE(ABORT, 'timeline_events: append-only, no delete');
 END;`
 
-// toolUseFileFields mirrors internal/backfill/claude/tools.go's fileTools:
-// the tool.use payload's pre-8ba5487a `detail` value becomes `path` for
-// these tools, `command` for Bash, under this migration's routing. store
-// cannot import internal/backfill/claude (that package imports store), so
-// this is a manually kept-in-sync copy of the same four names, not a shared
-// import — both express the one routing rule internal/payload's doc comment
-// names.
+// toolUseFileFields is the Claude file-tool set as it stood when this
+// migration was written (since moved to internal/tooluse's pathTools): the
+// tool.use payload's pre-8ba5487a `detail` value becomes `path` for these
+// tools, `command` for Bash, under this migration's routing. It is a frozen
+// copy of the four names the old rows could carry, not a shared import: a
+// later tool joining pathTools must not change what this migration did.
 var toolUseFileFields = map[string]bool{
 	"Edit":      true,
 	"Write":     true,

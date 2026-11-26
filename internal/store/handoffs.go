@@ -83,6 +83,14 @@ func (s *Store) Handoffs(q HandoffQuery) iter.Seq2[Record, error] {
 
 // handoffCandidates is q's candidate ids, newest first, and the location
 // matcher that decides the ones that are not direct.
+//
+// Under a Workspace it reads two keys, the Workspace's and the folder's own
+// (project.Key), not project.HandoffHome, which is one of the two: that rule
+// is where a Session on this Device files its Handoff, and a location also
+// holds Handoffs filed under the other (#4). A repo's includes a Workspace-
+// filed Handoff by a Session that edited it; a deep non-git folder's, whose
+// home is the Workspace, includes a Peer's filed under the folder's own key.
+// TestHandoffsAtAFolderReadItsWorkspaceAndItsOwnKey pins both.
 func (s *Store) handoffCandidates(q HandoffQuery) (locationMatcher, []handoffCandidate, error) {
 	dir := filepath.Clean(q.Dir)
 	home, under := project.WorkspaceHome(dir, q.Workspaces)

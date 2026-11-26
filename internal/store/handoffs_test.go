@@ -136,3 +136,52 @@ func TestHandoffsByOriginAndKeep(t *testing.T) {
 		t.Errorf("Peer Handoffs = %v, want %v", got, want)
 	}
 }
+
+// Which Handoffs a folder under a Workspace reads is not project.HandoffHome
+// (#4): that rule is where a Session on this Device files a Handoff, and a
+// location also holds Handoffs filed elsewhere. Pinned at both kinds of
+// folder, since the straight move onto HandoffHome loses one at each:
+//   - A deep non-git folder files at the Workspace, where its own Sessions'
+//     Handoffs are picked out by label; a Peer files by its own key, so a
+//     Peer's Handoff under the folder's own key is the folder's too.
+//   - A repo files under its own key, and a Handoff a root Session wrote
+//     (filed at the Workspace) after editing files in the repo is the repo's
+//     too, by its label.
+func TestHandoffsAtAFolderReadItsWorkspaceAndItsOwnKey(t *testing.T) {
+	s := mustOpen(t, tempDBPath(t))
+	home := "workspace:" + labelsWorkspaceDir
+	deep := labelsWorkspaceDir + "/group/notes"
+	repo, repoKey := labelsWorkspaceDir+"/omarcade", labelsWorkspaceDir+"/omarcade/.git"
+	git := labelsFakeGit{repo: {Toplevel: repo, CommonDir: repoKey}}
+	for _, k := range []string{home, deep, repoKey, labelsWorkspaceDir + "/group/drafts"} {
+		mustUpsertProject(t, s, k)
+	}
+	start := func(cwd, key string) string {
+		t.Helper()
+		id, err := s.StartSession(StartSessionParams{Agent: "claude", CWD: cwd, ProjectKey: key, StartedAt: time.Now(), Origin: OriginLive})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	now := time.Now()
+	local := insertHandoffAt(t, s, start(deep, deep), home, now, "")
+	elsewhere := insertHandoffAt(t, s, start(labelsWorkspaceDir+"/group/drafts", labelsWorkspaceDir+"/group/drafts"), home, now.Add(time.Minute), "")
+	peerSess := start("/peer/projects/group/notes", deep)
+	markPeerSession(t, s, peerSess)
+	peer := insertHandoffAt(t, s, peerSess, deep, now.Add(2*time.Minute), "dev-peer")
+
+	got := handoffIDs(t, s, HandoffQuery{ProjectKey: deep, Dir: deep, Git: git, Workspaces: labelsWorkspaces})
+	if want := []string{peer, local}; !reflect.DeepEqual(got, want) {
+		t.Errorf("Handoffs at %s = %v, want the Peer's %s and this Device's %s (not %s, another folder's)", deep, got, peer, local, elsewhere)
+	}
+
+	inRepo := insertHandoffAt(t, s, start(repo, repoKey), repoKey, now.Add(3*time.Minute), "")
+	root := start(labelsWorkspaceDir, home)
+	mustAppendMutatingToolUse(t, s, root, "Edit", repo+"/main.go")
+	fromRoot := insertHandoffAt(t, s, root, home, now.Add(4*time.Minute), "")
+	got = handoffIDs(t, s, HandoffQuery{ProjectKey: repoKey, Dir: repo, Git: git, Workspaces: labelsWorkspaces})
+	if want := []string{fromRoot, inRepo}; !reflect.DeepEqual(got, want) {
+		t.Errorf("Handoffs at %s = %v, want the root Session's %s that edited it and the repo's own %s", repo, got, fromRoot, inRepo)
+	}
+}

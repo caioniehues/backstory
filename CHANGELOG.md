@@ -11,6 +11,10 @@ See `RELEASING.md` for the release flow and its approval gates.
 
 ## [Unreleased]
 
+### Changed
+
+- A possibly stale handoff's reasons read the same everywhere (#2). The session-start block's marker, `recall`'s status and This Week's Needs You reason all give one short clause per reason, e.g. `cargo test failed (exit 101) after it; 2 later edits to files it names`, where before the block counted "later non-zero exit(s)", `recall` printed kind slugs (`later-failure (ids 12)`) and This Week printed slugs for every reason but a failure. The block and `recall` then cite the evidence as `(evidence <ids>)`. In `this-week --json`, a `later-activity` reason's `text` is now `a later edit to a file the handoff names` (was `1 later event touched files the handoff names`) and a `contradicted` one starts `contradicted by a later record: `.
+
 ## [1.3.6] - 2026-11-25
 
 ### Security

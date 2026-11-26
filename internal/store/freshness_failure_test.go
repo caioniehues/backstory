@@ -296,3 +296,36 @@ func TestLaterFailureNoWritingSessionCountsOnlyToplevel(t *testing.T) {
 		t.Fatalf("failure at toplevel: %+v, want one citing %d", got, failTop)
 	}
 }
+
+// LaterFailureScope is the scope a failure and the pass that clears it are
+// both looked for in: after the latest affirm, from sessions (a Human's shell
+// one included) started in the handoff's folder, never a sibling folder's.
+func TestLaterFailureScopeIsTheHandoffsFolderAfterItsBoundary(t *testing.T) {
+	f := newFailureFolderFixture(t)
+	sessA, sessB := f.session(t, f.dirA, f.w), f.session(t, f.dirB, f.w)
+	shellA, err := f.s.StartSession(StartSessionParams{Agent: "shell", CWD: f.dirA, ProjectKey: f.w, StartedAt: time.Now(), Origin: OriginLive})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hA := f.handoff(t, sessA, f.w)
+	mustAppendAgentFailure(t, f.s, sessA, "before", "make", 2)
+	if _, err := f.s.Confirm(ConfirmParams{Identity: Identity{Kind: IdentityHuman, Actor: "human"}, Action: ConfirmAffirm, RecordID: hA.ID, ProjectKey: f.w}); err != nil {
+		t.Fatal(err)
+	}
+	fail := mustAppendAgentFailure(t, f.s, sessA, "after", "make", 2)
+	pass := mustAppendShellEvent(t, f.s, shellA, "make", 0)
+	mustAppendAgentFailure(t, f.s, sessB, "sibling", "make", 2)
+
+	events, err := f.s.LaterFailureScope(hA, f.workspaces)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []int64
+	for _, e := range events {
+		ids = append(ids, e.ID)
+	}
+	// fail-1 is the failure's own tool.use, appended just before its result.
+	if want := []int64{fail - 1, fail, pass}; fmt.Sprint(ids) != fmt.Sprint(want) {
+		t.Fatalf("LaterFailureScope ids = %v, want %v", ids, want)
+	}
+}

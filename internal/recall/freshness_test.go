@@ -139,6 +139,21 @@ func TestBuildFlagsHandoffPossiblyStaleReasonLaterRecord(t *testing.T) {
 	}
 }
 
+// The label words the reasons as handoff's short label does, the same text
+// the SessionStart block and This Week show, then cites the Evidence by
+// short id.
+func TestStatusLabelOfPossiblyStaleHandoffIsHandoffsLabel(t *testing.T) {
+	st, sessionID := newFreshnessFixture(t)
+	h := mustInsertHandoffAbout(t, st, sessionID, []string{"a.go"})
+	later := mustInsertNoteAbout(t, st, sessionID, []string{"a.go"})
+	editID := mustAppendToolUseEvent(t, st, sessionID, "Edit", "a.go")
+
+	want := fmt.Sprintf("possibly stale: a later record shares a path it names; a later edit to a file it names (evidence %s,%d)", later[:8], editID)
+	if got := StatusLabel(buildHandoffItem(t, st, h.ID)); got != want {
+		t.Fatalf("StatusLabel =\n  %q\nwant\n  %q", got, want)
+	}
+}
+
 func TestBuildFlagsHandoffPossiblyStaleReasonLaterActivity(t *testing.T) {
 	st, sessionID := newFreshnessFixture(t)
 	h := mustInsertHandoffAbout(t, st, sessionID, []string{"a.go"})
@@ -240,6 +255,35 @@ func mustInsertHandoffAtTS(t *testing.T, st *store.Store, sessionID, projectKey 
 		t.Fatalf("insert handoff at ts fixture: %v", err)
 	}
 	return id
+}
+
+// A failure a later run of the same command passed is not Possibly stale
+// evidence in recall either: the block already said so, recall still
+// labelled the handoff possibly-stale (#2).
+func TestBuildClearedFailureIsNotPossiblyStale(t *testing.T) {
+	st, sessionID := newFreshnessFixture(t)
+	h := mustInsertHandoffAbout(t, st, sessionID, nil)
+	run := func(useID string, exit int) {
+		t.Helper()
+		use, _ := json.Marshal(payload.ToolUse{ToolUseID: useID, Name: "Bash", Command: "go test ./..."})
+		res, _ := json.Marshal(payload.ToolResult{ToolUseID: useID, IsError: exit != 0, Exit: &exit})
+		for _, e := range []store.Event{
+			{TS: time.Now(), Kind: payload.KindToolUse, SessionID: sessionID, Source: "posttooluse", Payload: string(use)},
+			{TS: time.Now(), Kind: payload.KindToolResult, SessionID: sessionID, Source: "posttooluse", Payload: string(res)},
+		} {
+			if _, err := st.AppendEvent(e); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	run("t1", 1)
+	if item := buildHandoffItem(t, st, h.ID); item.Status != StatusPossiblyStale {
+		t.Fatalf("open failure: status %q, want %q", item.Status, StatusPossiblyStale)
+	}
+	run("t2", 0)
+	if item := buildHandoffItem(t, st, h.ID); item.Status == StatusPossiblyStale || len(item.StaleReasons) != 0 {
+		t.Fatalf("cleared failure: item = %+v, want not possibly stale", item)
+	}
 }
 
 // A done handoff is Done with the date, never possibly stale.

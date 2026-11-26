@@ -78,7 +78,7 @@ func (f *fixture) event(session, kind string, pl any) int64 {
 func (f *fixture) run(cmd string, exit int) int64 {
 	f.t.Helper()
 	f.use++
-	useID := "tu" + string(rune('a'+f.use))
+	useID := "tu" + strconv.Itoa(f.use)
 	f.event(f.session, payload.KindToolUse, payload.ToolUse{ToolUseID: useID, Name: "Bash", Command: cmd})
 	return f.event(f.session, payload.KindToolResult, payload.ToolResult{ToolUseID: useID, IsError: exit != 0, Exit: &exit})
 }

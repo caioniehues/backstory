@@ -23,10 +23,12 @@ const maxSupersedeChain = 1000
 
 // runEdit is `backstory edit <id> [--file PATH | --stdin]`: the human
 // corrects a saved record. Records are append-only (SCHEMA.md invariant 1),
-// so an edit writes ONE new human-declared record — same kind, project_key
-// and about — plus a supersedes edge new→old, in one transaction; the old
-// row is never touched (decision 02c511b3 D2). Like delete, it opens the
-// store directly and attributes the write to humanIdentity.
+// so an edit writes ONE new human-declared record plus a supersedes edge
+// new→old, in one transaction; the old row is never touched (decision
+// 02c511b3 D2). Its text and Tier are new; it keeps the original's kind,
+// about and location (project_key and writing Session, which decide where it
+// is read, #51). Like delete, it opens the store directly and attributes the write to
+// humanIdentity.
 func runEdit(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	idArg, file, useStdin, err := parseEditArgs(args)
 	if err != nil {
@@ -109,6 +111,7 @@ func runEdit(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		Kind:       old.Kind,
 		Text:       text,
 		About:      old.About,
+		SessionID:  old.SessionID,
 		ProjectKey: old.ProjectKey,
 	}, []store.EdgeSpec{{
 		OtherID:    old.ID,

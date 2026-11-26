@@ -391,7 +391,8 @@ What "human-only" enforces, exactly:
   and no tool or socket method reaches it. It does not sync; the event it names never leaves
   this device.
 - **Edit (supersede)** — `backstory edit <id>` writes a NEW human-declared record (same kind,
-  project, about) with a `supersedes` edge to the old one, via `$VISUAL`/`$EDITOR`, `--file`,
+  project, about and writing session)
+  with a `supersedes` edge to the old one, via `$VISUAL`/`$EDITOR`, `--file`,
   or `--stdin`. The old record is never updated (append-only); a deleted or already-superseded
   record cannot be edited.
 

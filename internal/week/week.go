@@ -37,8 +37,8 @@ const maxRecordsPerProject = 1000
 type Params struct {
 	Store *store.Store
 	// Git resolves a project's toplevel repo identity for decision
-	// f3fa04c7's per-repo handoff resolution (store.LatestHandoffAt) when a
-	// project's latest session lives inside a workspace, and (clause 5,
+	// f3fa04c7's per-repo handoff resolution (handoff.ResumeFor) when a
+	// project's folder lives inside a workspace, and (clause 5,
 	// task 482b2320) for deriving a home's own active work-location labels
 	// from its sessions' observed file-touching events. nil is safe as long
 	// as no active project_key in the window is itself a workspace
@@ -464,10 +464,6 @@ func buildProject(st *store.Store, projectKey string, since, now time.Time, git 
 	}
 	summary.DisplayName = name
 
-	sess, hasSess, err := st.LatestSessionForProject(projectKey)
-	if err != nil {
-		return ProjectSummary{}, nil, fmt.Errorf("week: latest session for %s: %w", projectKey, err)
-	}
 	if summary.CWD, err = localProjectDir(st, projectKey); err != nil {
 		return ProjectSummary{}, nil, err
 	}
@@ -493,7 +489,7 @@ func buildProject(st *store.Store, projectKey string, since, now time.Time, git 
 
 	var attention []AttentionItem
 
-	handoff, hasHandoff, err := projectHandoff(st, projectKey, sess, hasSess, git, workspaces)
+	handoff, hasHandoff, err := rowHandoff(st, projectKey, summary.CWD, git, workspaces)
 	if err != nil {
 		return ProjectSummary{}, nil, fmt.Errorf("week: latest handoff for %s: %w", projectKey, err)
 	}
@@ -559,20 +555,13 @@ func buildProject(st *store.Store, projectKey string, since, now time.Time, git 
 	return summary, attention, nil
 }
 
-// projectHandoff resolves projectKey's own handoff for the Where-you-left-
-// off / Attention slot (decision f3fa04c7, task ed31b744): a session inside
-// a workspace files its handoffs under the workspace's home key, so the
-// row's handoff is the newest one belonging to the row's location
-// (store.LatestHandoffAt — the resolver block's Resume, recall, export and
-// `records --location` share). Outside any workspace (or with no session at
-// all), this is exactly the old st.LatestRecord(projectKey, KindHandoff).
-func projectHandoff(st *store.Store, projectKey string, sess store.Session, hasSess bool, git project.Git, workspaces []string) (store.Record, bool, error) {
-	if hasSess {
-		if _, ok := project.WorkspaceHome(sess.CWD, workspaces); ok {
-			return st.LatestHandoffAt(sess.CWD, git, workspaces)
-		}
-	}
-	return st.LatestRecord(projectKey, store.KindHandoff)
+// rowHandoff is a Work location's Handoff for Where you left off and
+// Attention: its Resume handoff (handoff.ResumeFor) read at dir, the
+// location's folder on this Device, never a Peer's cwd. No reader branch is
+// preferred: the row is not a session start on one branch.
+func rowHandoff(st *store.Store, projectKey, dir string, git project.Git, workspaces []string) (store.Record, bool, error) {
+	res, err := hstatus.ResumeFor(st, hstatus.Reader{ProjectKey: projectKey, Dir: dir, Git: git, Workspaces: workspaces})
+	return res.Handoff, res.Found, err
 }
 
 // uncommittedSessionEndItems is Attention kind (b): a session.git_state
@@ -776,8 +765,8 @@ func buildWeekGrid(st *store.Store, keys []string, since, now time.Time, workspa
 // session with no per-repo project_key of its own (decision f3fa04c7 clause
 // 5, task 482b2320): a session started at the workspace root itself, whose
 // file-touching events resolve to a repo/folder that never got its own
-// session. Its handoff resolves exactly as projectHandoff's home-scoped
-// branch does (store.LatestHandoffAt), and the same handoff.Of
+// session. Its handoff resolves as every row's does (rowHandoff, at the
+// label's folder), and the same handoff.Of
 // call feeds both the summary's HandoffStale flag and any
 // AttentionPossiblyStaleHandoff item, so the two can never disagree — the
 // same invariant buildProject's own handoff handling keeps. Unlike
@@ -805,7 +794,7 @@ func buildHomeLabelProject(st *store.Store, since, now time.Time, loc store.Acti
 	}
 
 	var attention []AttentionItem
-	handoff, hasHandoff, err := st.LatestHandoffAt(loc.Dir, git, workspaces)
+	handoff, hasHandoff, err := rowHandoff(st, key, loc.Dir, git, workspaces)
 	if err != nil {
 		return ProjectSummary{}, nil, fmt.Errorf("week: handoff for label %s: %w", loc.Label, err)
 	}

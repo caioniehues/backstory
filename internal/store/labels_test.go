@@ -189,3 +189,50 @@ func TestSessionLabelsIncludeCWDAndEditedDirs(t *testing.T) {
 		}
 	}
 }
+
+// A home's work locations come from the folders and touched files of
+// Sessions recorded on this Device only (#5). A Peer's Session filed under the
+// Workspace's own key still counts, on the Workspace's own location, but its
+// folder and the files it touched are paths on the Peer and add no location.
+func TestActiveHomeLabelsTakeAPeersSessionOnlyAtTheWorkspace(t *testing.T) {
+	s := mustOpen(t, tempDBPath(t))
+	wsKey := "workspace:" + labelsWorkspaceDir
+	mustUpsertProject(t, s, wsKey)
+	start := func(cwd string) string {
+		t.Helper()
+		id, err := s.StartSession(StartSessionParams{
+			Agent: "claude", CWD: cwd, ProjectKey: wsKey, StartedAt: time.Now().Add(-time.Hour), Origin: OriginLive,
+		})
+		if err != nil {
+			t.Fatalf("StartSession(%s): %v", cwd, err)
+		}
+		return id
+	}
+	local := start(labelsWorkspaceDir + "/scratch")
+	mustAppendMutatingToolUse(t, s, local, "Edit", labelsWorkspaceDir+"/omarcade/main.go")
+	peer := start(labelsWorkspaceDir + "/notes")
+	mustAppendMutatingToolUse(t, s, peer, "Edit", labelsWorkspaceDir+"/vidflow/app.py")
+	markPeerSession(t, s, peer)
+
+	locs, err := s.ActiveHomeLabels(wsKey, time.Now().Add(-24*time.Hour), time.Now().Add(time.Minute), labelsGit, labelsWorkspaces, nil, nil)
+	if err != nil {
+		t.Fatalf("ActiveHomeLabels: %v", err)
+	}
+	got := map[string][]string{}
+	for _, loc := range locs {
+		got[loc.Label] = loc.SessionIDs
+	}
+	want := map[string][]string{
+		"projects/scratch":  {local},
+		"projects/omarcade": {local},
+		"projects":          {peer},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("locations (label -> sessions) = %v, want %v", got, want)
+	}
+	for _, loc := range locs {
+		if loc.Label == "projects" && (loc.Dir != labelsWorkspaceDir || !reflect.DeepEqual(loc.CWDSessionIDs, []string{peer})) {
+			t.Errorf("workspace location = %+v, want dir %s with the Peer's Session attributed whole", loc, labelsWorkspaceDir)
+		}
+	}
+}

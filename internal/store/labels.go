@@ -140,7 +140,9 @@ type ActiveWorkLocation struct {
 // labels win, but only the included ones: a session whose edits all land in
 // excluded locations (a /tmp scratchpad, Claude's memory dir) or that edited
 // nothing falls back to the label of its own cwd, provided that is included
-// too. A label is never invented from an excluded location.
+// too. A label is never invented from an excluded location. Only Sessions
+// recorded on this Device add labels of their folders and edits; a Peer's
+// counts on the Workspace's own label only (sessionHomeDirs, #5).
 func (s *Store) ActiveHomeLabels(home string, since, asOf time.Time, git project.Git, workspaces []string, keep func(Session) (bool, error), include func(dir string) bool) ([]ActiveWorkLocation, error) {
 	sessions, err := s.sessionsForHome(home, workspaces)
 	if err != nil {
@@ -165,24 +167,9 @@ func (s *Store) ActiveHomeLabels(home string, since, asOf time.Time, git project
 		if !ok || last.Before(since) {
 			continue
 		}
-		edited, err := s.sessionEditedDirs(sess.ID, git, workspaces)
+		dirs, cwdLabel, err := s.sessionHomeDirs(sess, home, git, workspaces, include)
 		if err != nil {
 			return nil, fmt.Errorf("store: active home labels for %s: %w", home, err)
-		}
-		dirs := map[string]string{}
-		for label, dir := range edited {
-			if include == nil || include(dir) {
-				dirs[label] = dir
-			}
-		}
-		// The cwd label always counts (decision 1e53165a) when its folder is
-		// included; it is CWD-attributed (every real-work event belongs to
-		// it) unless an edit already resolved to that same label.
-		cwdLabel := project.Label(sess.CWD, git, workspaces)
-		if _, edits := dirs[cwdLabel]; !edits && (include == nil || include(sess.CWD)) {
-			dirs[cwdLabel] = sess.CWD
-		} else {
-			cwdLabel = ""
 		}
 		for label, dir := range dirs {
 			byCWD := label == cwdLabel
@@ -218,6 +205,45 @@ func (s *Store) ActiveHomeLabels(home string, since, asOf time.Time, git project
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Label < out[j].Label })
 	return out, nil
+}
+
+// sessionHomeDirs is the label -> directory map of the work locations sess
+// adds to home, and the one label (if any) it is CWD-attributed to: every
+// real-work event of sess belongs to that label, not just its file edits.
+//
+// A Session on this Device adds the included folders its file edits touched,
+// and the folder it started in (decision 1e53165a) when that is included,
+// CWD-attributed unless an edit already resolved to the same label. A Peer's
+// Session (origin_device set) is in home only by its own key (project.InHome),
+// and its folder and touched files are paths on the Peer, so they add nothing
+// here (#5): it adds only the Workspace's own folder, CWD-attributed, and
+// nothing to a home that is not a Workspace.
+func (s *Store) sessionHomeDirs(sess Session, home string, git project.Git, workspaces []string, include func(dir string) bool) (map[string]string, string, error) {
+	dirs := map[string]string{}
+	if sess.OriginDevice != "" {
+		ws, ok := project.WorkspaceDirOf(home)
+		if !ok || (include != nil && !include(ws)) {
+			return dirs, "", nil
+		}
+		label := project.Label(ws, git, workspaces)
+		dirs[label] = ws
+		return dirs, label, nil
+	}
+	edited, err := s.sessionEditedDirs(sess.ID, git, workspaces)
+	if err != nil {
+		return nil, "", err
+	}
+	for label, dir := range edited {
+		if include == nil || include(dir) {
+			dirs[label] = dir
+		}
+	}
+	cwdLabel := project.Label(sess.CWD, git, workspaces)
+	if _, edits := dirs[cwdLabel]; edits || (include != nil && !include(sess.CWD)) {
+		return dirs, "", nil
+	}
+	dirs[cwdLabel] = sess.CWD
+	return dirs, cwdLabel, nil
 }
 
 // sessionLastActivity is sess's own last-activity instant — its start, any

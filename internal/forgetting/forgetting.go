@@ -28,7 +28,7 @@ const (
 	Sweep    Reason = "sweep"    // the workspace project-key sweep at Open
 	Identity Reason = "identity" // the repo-identity merge at Open
 	Rehome   Reason = "rehome"   // the handoff re-home at Open
-	// Unrehome: migration 0029, which moves back the Handoffs the pre-#5
+	// Unrehome: the repair at Open that moves back the Handoffs the pre-#5
 	// re-home moved onto a non-git folder's own key under a Workspace.
 	Unrehome Reason = "unrehome"
 )

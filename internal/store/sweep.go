@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/RidgetopAi/backstory/internal/forgetting"
 	"github.com/RidgetopAi/backstory/internal/project"
 )
 
@@ -100,7 +101,7 @@ func (s *Store) sweepLegacyWorkspaceKeys(targets map[string]string) error {
 	}
 
 	// VACUUM INTO cannot run inside a transaction, so back up before BEGIN.
-	backupPath := s.path + ".pre-sweep-" + time.Now().UTC().Format("20060102T150405.000000000Z")
+	backupPath := forgetting.PreCopyPath(s.path, forgetting.Sweep, time.Now())
 	if err := s.vacuumIntoPrivate(backupPath); err != nil {
 		return fmt.Errorf("store: sweep: backup to %s: %w", backupPath, err)
 	}

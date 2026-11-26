@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"log"
 	"time"
+
+	"github.com/RidgetopAi/backstory/internal/forgetting"
 )
 
 // rehomeHandoffWhere selects the handoffs the home migration moves (decision
@@ -33,7 +35,7 @@ func (s *Store) rehomeHandoffs() error {
 		return nil
 	}
 
-	backupPath := s.path + ".pre-rehome-" + time.Now().UTC().Format("20060102T150405.000000000Z")
+	backupPath := forgetting.PreCopyPath(s.path, forgetting.Rehome, time.Now())
 	if err := s.vacuumIntoPrivate(backupPath); err != nil {
 		return fmt.Errorf("store: rehome handoffs: backup to %s: %w", backupPath, err)
 	}

@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"log"
 	"net"
 	"os"
 	"os/exec"
@@ -15,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/RidgetopAi/backstory/internal/drain"
 	"github.com/RidgetopAi/backstory/internal/embed"
 	"github.com/RidgetopAi/backstory/internal/mcp"
 	"github.com/RidgetopAi/backstory/internal/store"
@@ -85,12 +88,12 @@ func stubRuntimeDir(t *testing.T) (runtime string, env []string) {
 	return runtime, []string{"STUB_DEVICES=" + devices, "STUB_SERVER_STARTS=" + filepath.Join(dir, "starts")}
 }
 
-// recallNotice runs `backstory recall --json` for "quokka" in-process
+// recallNotice runs `backstory recall --json` for query in-process
 // against dataDir and runtimeDir and returns its notice and item ids.
-func recallNotice(t *testing.T, dataDir, runtimeDir string) (string, []string) {
+func recallNotice(t *testing.T, dataDir, runtimeDir, query string) (string, []string) {
 	t.Helper()
 	t.Setenv("XDG_RUNTIME_DIR", runtimeDir)
-	stdout, stderr, code := runRecallCLI(t, dataDir, "--project", queryRecallProject, "--json", "quokka")
+	stdout, stderr, code := runRecallCLI(t, dataDir, "--project", queryRecallProject, "--json", query)
 	if code != 0 {
 		t.Fatalf("recall: exit %d: %s", code, stderr)
 	}
@@ -115,7 +118,7 @@ func recallNotice(t *testing.T, dataDir, runtimeDir string) (string, []string) {
 func TestRecallFallsBackToFTSWhenNoDaemonRuns(t *testing.T) {
 	dataDir := t.TempDir()
 	seedQueryStore(t, dataDir, "/nonexistent/llama-embedding")
-	notice, ids := recallNotice(t, dataDir, t.TempDir())
+	notice, ids := recallNotice(t, dataDir, t.TempDir(), "quokka")
 	if notice != "embeddings unavailable: daemon unreachable" {
 		t.Errorf("notice = %q, want the daemon unreachable", notice)
 	}
@@ -128,7 +131,7 @@ func TestRecallFallsBackToFTSWhenNoDaemonRuns(t *testing.T) {
 func TestRecallSaysEmbeddingsOffWhenOff(t *testing.T) {
 	dataDir := t.TempDir()
 	seedQueryStore(t, dataDir, "")
-	if notice, ids := recallNotice(t, dataDir, t.TempDir()); notice != "embeddings off" || len(ids) != 1 {
+	if notice, ids := recallNotice(t, dataDir, t.TempDir(), "quokka"); notice != "embeddings off" || len(ids) != 1 {
 		t.Errorf("notice = %q, items %v; want embeddings off and the FTS hit", notice, ids)
 	}
 }
@@ -193,15 +196,24 @@ func TestDaemonAnswersEmbedQueryFromItsWarmServer(t *testing.T) {
 		t.Errorf("slow query: %v after %v, want the daemon's %v deadline", err, time.Since(start), mcp.EmbedQueryDeadline)
 	}
 
-	// The Decision has no vector yet, so the vector side's answer is
-	// "partial": recall reached the daemon's query server, from the CLI
-	// over embed_query and in the daemon's own Searcher in-process.
-	const partial = "embeddings partial: 1 Record not embedded yet"
-	if notice, ids := recallNotice(t, dataDir, runtimeDir); notice != partial || len(ids) != 1 {
-		t.Errorf("CLI recall notice = %q, items %v; want the vector side through the daemon", notice, ids)
+	// The drain (#42) embeds the Decision. The query server's fingerprint
+	// must be byte-identical to the one the drain writes vectors under, or
+	// the vector scan matches no rows.
+	fp, err := client.Fingerprint(context.Background())
+	if err != nil {
+		t.Fatal(err)
 	}
-	if msg := daemonRecallMessage(t, sock, "quokka"); msg != partial {
-		t.Errorf("the daemon's recall message = %q, want %q", msg, partial)
+	dbPath := filepath.Join(dataDir, "backstory", "backstory.db")
+	waitForDrained(t, dbPath, fp, out.String)
+
+	// "marsupial" matches no word of the Decision, so only the vector side
+	// can find it: from the CLI over embed_query, and in the daemon's own
+	// Searcher in-process. No reason means nothing was missing.
+	if notice, ids := recallNotice(t, dataDir, runtimeDir, "marsupial"); notice != "" || len(ids) != 1 || ids[0] != "dddd4444-0000-4000-8000-000000000004" {
+		t.Errorf("CLI recall: notice %q, items %v; want the Decision found by its vector, no reason", notice, ids)
+	}
+	if msg, ids := daemonRecall(t, sock, "marsupial"); msg != "" || len(ids) != 1 {
+		t.Errorf("the daemon's recall: message %q, items %v; want the Decision found by its vector", msg, ids)
 	}
 
 	starts, err := os.ReadFile(strings.TrimPrefix(stubEnv[1], "STUB_SERVER_STARTS=")) //nolint:gosec // the test's own temp file
@@ -229,9 +241,9 @@ func TestDaemonAnswersEmbedQueryFromItsWarmServer(t *testing.T) {
 	}
 }
 
-// daemonRecallMessage asks the daemon's recall method (the agent path, with
+// daemonRecall asks the daemon's recall method (the agent path, with
 // the daemon's own Searcher) for query in queryRecallProject.
-func daemonRecallMessage(t *testing.T, sock, query string) string {
+func daemonRecall(t *testing.T, sock, query string) (string, []string) {
 	t.Helper()
 	conn, err := net.Dial("unix", sock)
 	if err != nil {
@@ -261,7 +273,65 @@ func daemonRecallMessage(t *testing.T, sock, query string) string {
 	if err := json.Unmarshal(resp.Result, &res); err != nil {
 		t.Fatal(err)
 	}
-	return res.Message
+	var ids []string
+	for _, it := range res.Items {
+		ids = append(ids, it.ID)
+	}
+	return res.Message, ids
+}
+
+// waitForDrained waits until the drain has published fp as its fingerprint
+// and embedded every queued Record under it.
+func waitForDrained(t *testing.T, dbPath, fp string, log func() string) {
+	t.Helper()
+	st, err := store.Open(dbPath, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	var (
+		rep    drain.Report
+		counts store.EmbedCounts
+	)
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		if rep, _, err = drain.ReadReport(st); err != nil {
+			t.Fatal(err)
+		}
+		if counts, err = st.EmbedCounts(fp); err != nil {
+			t.Fatal(err)
+		}
+		if rep.Fingerprint == fp && counts.Embedded == 1 && counts.Queued == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the drain's fingerprint %q, counts %+v under the query server's %q; want them identical and the Decision embedded\ndaemon log:\n%s",
+				rep.Fingerprint, counts, fp, log())
+		}
+	}
+}
+
+// A crashing query server backs off by the drain's rules (#20, #42), and
+// embed's own defaults agree with them.
+func TestQueryServerBacksOffByTheDrainsRules(t *testing.T) {
+	cfg := queryServerConfig(nil, "/run/user/1000/backstory/sock", log.New(io.Discard, "", 0))
+	if cfg.Socket != "/run/user/1000/backstory/embed.sock" {
+		t.Errorf("socket = %q, want embed.sock beside the daemon's", cfg.Socket)
+	}
+	want := []time.Duration{drain.FirstBackoff, 2 * drain.FirstBackoff, 4 * drain.FirstBackoff}
+	for i, w := range want {
+		if d := cfg.Backoff.Next(); d != w {
+			t.Fatalf("wait %d = %v, want %v", i+1, d, w)
+		}
+	}
+	for range 20 {
+		cfg.Backoff.Next()
+	}
+	if d := cfg.Backoff.Next(); d != drain.MaxBackoff {
+		t.Errorf("capped at %v, want drain.MaxBackoff %v", d, drain.MaxBackoff)
+	}
+	if embed.BackoffBase != drain.FirstBackoff || embed.BackoffCap != drain.MaxBackoff {
+		t.Errorf("embed's defaults %v..%v differ from the drain's %v..%v", embed.BackoffBase, embed.BackoffCap, drain.FirstBackoff, drain.MaxBackoff)
+	}
 }
 
 // waitForGone waits for pid to exit (it is the daemon's child, reparented

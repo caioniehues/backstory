@@ -6,10 +6,10 @@ import (
 	"time"
 )
 
-// Confirmation is one live confirm Record that confirms a target: Done,
-// Affirm or Promote, the three actions that mint an `informs` edge
-// (confirmEdgeType). Contradict and Supersede are not confirmations; their
-// edges are real `contradicts` and `supersedes` edges.
+// Confirmation is one confirm Record, not Tombstoned, that confirms a
+// target: Done, Affirm or Promote, the three actions that mint an
+// `informs` edge (confirmEdgeType). Contradict and Supersede are not
+// confirmations; their edges are real `contradicts` and `supersedes` edges.
 type Confirmation struct {
 	// ID is the confirm Record's own id.
 	ID string
@@ -20,15 +20,15 @@ type Confirmation struct {
 	TS   time.Time
 }
 
-// ConfirmationsOf returns, for each of ids that has any, its live
-// confirmations, oldest first by sequence. An id with none has no entry.
+// ConfirmationsOf returns, for each of ids, its confirmations, oldest first
+// by sequence: an empty slice, never nil, for an id with none.
 //
 // Type comes from the columns Confirm wrote, never from the target's text:
 // a promote always stamps its promoter, a Done is the human-declared
 // DoneMarkerText with no promoter (HandoffDone's rule), and any other
 // informing confirm is an affirm. A Tombstoned confirm confirms nothing.
 func (s *Store) ConfirmationsOf(ids []string) (map[string][]Confirmation, error) {
-	out := map[string][]Confirmation{}
+	out := make(map[string][]Confirmation, len(ids))
 	if len(ids) == 0 {
 		return out, nil
 	}
@@ -36,6 +36,7 @@ func (s *Store) ConfirmationsOf(ids []string) (map[string][]Confirmation, error)
 	args := []any{string(ConfirmPromote), string(TierHumanDeclared), DoneMarkerText, string(ConfirmDone), string(ConfirmAffirm),
 		string(EdgeInforms), string(KindConfirm)}
 	for i, id := range ids {
+		out[id] = []Confirmation{}
 		placeholders[i] = "?"
 		args = append(args, id)
 	}

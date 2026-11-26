@@ -282,16 +282,16 @@ func (e *searchEnv) insertDraft(text string, expires time.Time) string {
 func TestSearchTextExcludesExpiredDrafts(t *testing.T) {
 	e := newSearchEnv(t)
 	e.insertDraft("lantern lantern lantern guess", time.Now().Add(-time.Hour))
-	live := e.insertDraft("lantern guess still fresh", time.Now().Add(time.Hour))
+	fresh := e.insertDraft("lantern guess still fresh", time.Now().Add(time.Hour))
 	kept := e.insert("proj-a", KindNote, "a lantern note among many other words", "")
 
 	got := e.search("lantern", SearchFilter{ProjectKey: "proj-a", Limit: 1})
-	if !slices.Equal(got, []string{live}) {
-		t.Fatalf("limit 1: got %v, want [%s] (the expired Draft never takes the slot)", got, live)
+	if !slices.Equal(got, []string{fresh}) {
+		t.Fatalf("limit 1: got %v, want [%s] (the expired Draft never takes the slot)", got, fresh)
 	}
 	got = e.search("lantern", SearchFilter{ProjectKey: "proj-a", Limit: 10})
-	if !slices.Equal(got, []string{live, kept}) {
-		t.Fatalf("got %v, want [%s %s] (no expired Draft)", got, live, kept)
+	if !slices.Equal(got, []string{fresh, kept}) {
+		t.Fatalf("got %v, want [%s %s] (no expired Draft)", got, fresh, kept)
 	}
 }
 

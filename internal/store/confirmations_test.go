@@ -14,11 +14,12 @@ func mustConfirm(t *testing.T, s *Store, p ConfirmParams) string {
 	return id
 }
 
-// Each live confirm Record informing a target is named by the action the
-// store wrote it under: Done, Affirm or Promote. A Contradiction is not a
-// confirmation, a Tombstoned confirm no longer confirms anything, and an
-// Agent's affirm whose text happens to read like Done's marker is still an
-// affirm.
+// Each confirm Record informing a target, not Tombstoned, is named by the
+// action the store wrote it under: Done, Affirm or Promote. A
+// Contradiction is not a confirmation, a Tombstoned confirm no longer
+// confirms anything, and an Agent's affirm whose text happens to read like
+// Done's marker is still an affirm. An id with no confirmations has an
+// empty entry, never nil.
 func TestConfirmationsOfNamesEachConfirmByItsStoredAction(t *testing.T) {
 	s, sessionA := newFreshnessFixture(t)
 	sessionB := mustStartSessionInProject(t, s, freshnessProjectKey)
@@ -70,7 +71,7 @@ func TestConfirmationsOfNamesEachConfirmByItsStoredAction(t *testing.T) {
 		{done, ConfirmDone, TierHumanDeclared},
 	})
 	check(draft, []want{{promote, ConfirmPromote, TierAgentDeclared}})
-	if cs, ok := got[unconfirmed]; ok {
-		t.Errorf("ConfirmationsOf[unconfirmed] = %+v, want no entry", cs)
+	if cs := got[unconfirmed]; cs == nil || len(cs) != 0 {
+		t.Errorf("ConfirmationsOf[unconfirmed] = %#v, want empty, not nil", cs)
 	}
 }

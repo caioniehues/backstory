@@ -38,16 +38,16 @@ type treeLine struct {
 
 // contentBlock is one element of an assistant message's content array.
 // type == "toolCall" carries ID/Name/Arguments; type == "text"/"thinking"
-// carries Text. Arguments is never inspected here (task scope: Pi's
-// argument shape is not part of this punch's field list — see pi.go's
-// toolUsePayload doc), only carried through parseably for a future punch.
+// carries Text. Arguments is the call's own argument object, read by
+// tooluse.Pi the same way it reads the live hook's tool_input.
 type contentBlock struct {
 	Type string `json:"type"`
 	Text string `json:"text"`
 
 	// type == "toolCall"
-	ID   string `json:"id"`
-	Name string `json:"name"`
+	ID        string          `json:"id"`
+	Name      string          `json:"name"`
+	Arguments json.RawMessage `json:"arguments"`
 }
 
 // parseLine unmarshals one JSONL line into a treeLine. A parse error here

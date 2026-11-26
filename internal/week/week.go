@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RidgetopAi/backstory/internal/gitstate"
 	hstatus "github.com/RidgetopAi/backstory/internal/handoff"
 	"github.com/RidgetopAi/backstory/internal/payload"
 	"github.com/RidgetopAi/backstory/internal/project"
@@ -576,9 +577,9 @@ func rowHandoff(st *store.Store, projectKey, dir string, git project.Git, worksp
 	return res.Handoff, res.Found, err
 }
 
-// uncommittedSessionEndItems is Attention kind (b): a session.git_state
-// event with CouldNotObserve false and UncommittedCount > 0 — never a
-// could-not-observe event, which carries no positive evidence at all
+// uncommittedSessionEndItems is Attention kind (b): a working tree whose
+// latest observed session end (gitstate.Latest) had UncommittedCount > 0 —
+// never a could-not-observe end, which carries no positive evidence at all
 // (payload.SessionGitState's own doc: "a writer must never fold that into
 // UncommittedCount 0"). Its reason leads with label, the project's display
 // name, as every project-scoped kind's does.
@@ -601,57 +602,24 @@ func uncommittedSessionEndItems(st *store.Store, git project.Git, projectKey, la
 	if err != nil {
 		return nil, fmt.Errorf("week: session git-state events for %s: %w", projectKey, err)
 	}
-	// Per-command shell sessions older daemons left on disk each carry a
-	// git_state of their own; a shell is not an agent session ending.
-	shellSessions, err := st.ShellSessionIDs()
+	// Each tree's latest OBSERVED session end (gitstate.Latest, the rule the
+	// SessionStart Repo line shares, #4): an earlier dirty end is superseded
+	// by a later clean one in the same tree, and a later could-not-observe
+	// end carries no evidence either way.
+	ends, err := gitstate.Latest(st, git, events)
 	if err != nil {
-		return nil, fmt.Errorf("week: shell sessions for %s: %w", projectKey, err)
-	}
-	// Only each tree's LATEST observable event counts: events arrive
-	// oldest-first, so the last one that is not could-not-observe is that
-	// tree's current state. An earlier dirty event is superseded by a later
-	// clean one in the same tree, and a later could-not-observe event carries
-	// no evidence either way.
-	type observed struct {
-		event store.TimelineEvent
-		gs    payload.SessionGitState
-	}
-	latest := map[string]observed{}
-	var trees []string
-	treeOf := map[string]string{}
-	for _, e := range events {
-		if shellSessions[e.SessionID] {
-			continue
-		}
-		var gs payload.SessionGitState
-		if err := json.Unmarshal([]byte(e.Payload), &gs); err != nil {
-			return nil, fmt.Errorf("week: parse session.git_state payload (event %d): %w", e.ID, err)
-		}
-		if gs.Phase == payload.GitStatePhaseStart || gs.CouldNotObserve || gs.UncommittedCount == nil {
-			continue
-		}
-		tree, known := treeOf[e.SessionID]
-		if !known {
-			if tree, err = st.SessionTree(git, e.SessionID); err != nil {
-				return nil, fmt.Errorf("week: tree of session %s: %w", e.SessionID, err)
-			}
-			treeOf[e.SessionID] = tree
-		}
-		if _, seen := latest[tree]; !seen {
-			trees = append(trees, tree)
-		}
-		latest[tree] = observed{event: e, gs: gs}
+		return nil, fmt.Errorf("week: latest git state for %s: %w", projectKey, err)
 	}
 	var out []AttentionItem
-	for _, tree := range trees {
-		o := latest[tree]
-		if *o.gs.UncommittedCount <= 0 {
+	for _, end := range ends {
+		tree := end.Tree
+		if end.Uncommitted <= 0 {
 			continue
 		}
 		// `backstory dismiss` hid this tree's item until a newer git state
 		// replaces this event as the tree's latest.
-		if dismissed, err := st.GitStateDismissed(o.event); err != nil {
-			return nil, fmt.Errorf("week: dismissal of git-state event %d: %w", o.event.ID, err)
+		if dismissed, err := st.GitStateDismissed(end.Event); err != nil {
+			return nil, fmt.Errorf("week: dismissal of git-state event %d: %w", end.Event.ID, err)
 		} else if dismissed {
 			continue
 		}
@@ -668,11 +636,11 @@ func uncommittedSessionEndItems(st *store.Store, git project.Git, projectKey, la
 				continue
 			}
 		}
-		reason := fmt.Sprintf("%s: session ended with %d uncommitted change(s)", label, *o.gs.UncommittedCount)
-		if o.gs.Branch != "" {
-			reason += " on branch " + o.gs.Branch
+		reason := fmt.Sprintf("%s: session ended with %d uncommitted change(s)", label, end.Uncommitted)
+		if end.Branch != "" {
+			reason += " on branch " + end.Branch
 		}
-		if len(trees) > 1 {
+		if len(ends) > 1 {
 			if tree != "" {
 				reason += " in " + project.WorkspaceRelativeName(tree, workspaces)
 			} else {
@@ -684,7 +652,7 @@ func uncommittedSessionEndItems(st *store.Store, git project.Git, projectKey, la
 			ProjectKey:  projectKey,
 			Reason:      reason,
 			CWD:         tree,
-			EvidenceIDs: []string{strconv.FormatInt(o.event.ID, 10)},
+			EvidenceIDs: []string{strconv.FormatInt(end.Event.ID, 10)},
 		})
 	}
 	return out, nil

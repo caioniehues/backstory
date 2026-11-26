@@ -249,9 +249,9 @@ func (s *Store) sessionLastActivity(sess Session, asOf time.Time) (time.Time, bo
 // sessionHomeKey is the home key sess's own folder resolves to (decision
 // f3fa04c7): the enclosing workspace's key when sess.CWD is a workspace dir
 // or lives inside one at any depth (project.WorkspaceHome), else sess's own
-// stored project_key unchanged — the exact same rule handleNote applies
-// when a handoff is written from that session, so a home-scoped read always
-// agrees with what a home-scoped write filed.
+// stored project_key unchanged. A handoff written from a repo under a
+// workspace is still filed under the repo's own key (decision dc0a4387), so
+// sessionsForHome also admits a session by its project_key.
 func sessionHomeKey(sess Session, workspaces []string) string {
 	if home, ok := project.WorkspaceHome(sess.CWD, workspaces); ok {
 		return home
@@ -260,15 +260,20 @@ func sessionHomeKey(sess Session, workspaces []string) string {
 }
 
 // sessionsForHome returns every session whose own folder resolves
-// (sessionHomeKey) to homeKey — the membership HandoffFreshness's home-
-// scoped queries need (decision f3fa04c7): "every session whose folder
+// (sessionHomeKey) to homeKey, or whose own project_key is homeKey — the
+// membership HandoffFreshness's home-scoped queries need (decision
+// f3fa04c7): "every session whose folder
 // resolves to that home", which can span many distinct project_key values
 // (one per repo under a workspace), not just homeKey's own project_key
 // aliases. Order is unspecified; callers care about membership, not
 // sequence.
 //
+// The project_key match keeps a repo under a workspace in its own handoff's
+// home: its sessions' folders resolve to the workspace, but the handoff is
+// filed under the repo's key (decision dc0a4387).
+//
 // It reads only candidates, a superset of the members (sessionHomeKey still
-// decides): sessions with project_key homeKey, and, when homeKey is a
+// decides the rest): sessions with project_key homeKey, and, when homeKey is a
 // workspace's own key, every session whose folder starts with that
 // workspace or is spelled unclean (filepath.Clean could move it inside).
 // HandoffFreshness calls this once per handoff, and reading every session
@@ -299,7 +304,7 @@ func (s *Store) sessionsForHome(homeKey string, workspaces []string) ([]Session,
 		if err != nil {
 			return nil, fmt.Errorf("store: sessions for home %s: %w", homeKey, err)
 		}
-		if sessionHomeKey(sess, workspaces) == homeKey {
+		if sess.ProjectKey == homeKey || sessionHomeKey(sess, workspaces) == homeKey {
 			out = append(out, sess)
 		}
 	}

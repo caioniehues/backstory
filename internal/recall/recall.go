@@ -605,7 +605,8 @@ func statusLabel(item Item) string {
 	case StatusContradicted:
 		return "contradicted (evidence " + joinInt64s(item.ContradictionEvidence) + ")"
 	case StatusPossiblyStale:
-		return "possibly stale: " + staleReasonSummary(item.StaleReasons)
+		return "possibly stale: " + handoff.Status{Reasons: item.StaleReasons}.Label() +
+			" (evidence " + strings.Join(staleEvidence(item.StaleReasons), ",") + ")"
 	case StatusExpired:
 		return "expired " + item.ExpiresAt.UTC().Format(time.RFC3339)
 	case StatusCurrent:
@@ -615,23 +616,17 @@ func statusLabel(item Item) string {
 	}
 }
 
-// staleReasonSummary renders every reason in item.StaleReasons as "<kind>
-// (ids <evidence>)", joined with "; ".
-func staleReasonSummary(reasons []store.FreshnessReason) string {
-	parts := make([]string, len(reasons))
-	for i, r := range reasons {
-		if r.Kind == store.FreshnessLaterUnrecordedWork {
-			parts[i] = r.UnrecordedWorkClause()
-			continue
-		}
-		ids := make([]string, 0, len(r.RecordIDs)+len(r.EventIDs))
+// staleEvidence is handoff.Status.Evidence in reason order with each record
+// id shortened, as the rest of the label shows record ids.
+func staleEvidence(reasons []store.FreshnessReason) []string {
+	var ids []string
+	for _, r := range reasons {
 		for _, id := range r.RecordIDs {
 			ids = append(ids, shortID(id))
 		}
 		ids = append(ids, intsToStrs(r.EventIDs)...)
-		parts[i] = fmt.Sprintf("%s (ids %s)", r.Kind, strings.Join(ids, ","))
 	}
-	return strings.Join(parts, "; ")
+	return ids
 }
 
 func intsToStrs(ids []int64) []string {

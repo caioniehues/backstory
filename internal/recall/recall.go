@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/RidgetopAi/backstory/internal/block"
+	"github.com/RidgetopAi/backstory/internal/graph"
 	"github.com/RidgetopAi/backstory/internal/handoff"
 	"github.com/RidgetopAi/backstory/internal/search"
 	"github.com/RidgetopAi/backstory/internal/store"
@@ -29,11 +30,6 @@ const maxProjectRecords = 500
 
 // maxTextResults bounds a free-text anchor's own search the same way.
 const maxTextResults = 200
-
-// edgeWalkHops is how many hops a record anchor's edge walk follows, both
-// directions, before stopping (PLAN.md §Phase 4: "walk its edges ... one or
-// two hops, both directions").
-const edgeWalkHops = 2
 
 // AnchorKind is the kind of anchor Build resolves to a starting record set.
 type AnchorKind string
@@ -73,8 +69,8 @@ func ProjectAnchor(projectKey string) Anchor {
 }
 
 // RecordAnchor anchors on a single record, named by its full id or a short
-// prefix unique to it, plus the records reachable from it within
-// edgeWalkHops of any edge type, either direction.
+// prefix unique to it, plus the records the Ledger walk reaches from it
+// (graph.Walk, graph.DefaultHops of any edge type, either direction).
 func RecordAnchor(idOrPrefix string) Anchor {
 	return Anchor{Kind: AnchorRecord, RecordID: idOrPrefix}
 }
@@ -179,6 +175,23 @@ type Item struct {
 	// Git is the record's write-time repo HEAD compared with the repo's HEAD
 	// now; nil when the record carries no git_head (or is tombstoned).
 	Git *GitStamp
+
+	// ProjectKey is the Project the record belongs to.
+	ProjectKey string
+	// OtherProject is set on a record anchor's item from a Project other
+	// than the anchor record's: the walk crosses scope, and the item is
+	// labelled with its Project.
+	OtherProject bool
+	// Reached is how a record anchor's walk reached the item (graph.Walk);
+	// nil for a direct hit: the anchor itself, and every project or text
+	// anchor item.
+	Reached *graph.Reached
+	// Handoff is handoff's status for a Handoff that isn't Tombstoned,
+	// whatever its recall Status; nil for any other item.
+	Handoff *handoff.Status
+	// ConfirmedBy is every live Done, Affirm or Promote confirming the
+	// record, oldest first; never nil.
+	ConfirmedBy []store.Confirmation
 }
 
 // Result is Build's return value: the items that made the altitude's
@@ -206,22 +219,36 @@ type Result struct {
 // call, no env read) — it only needs the list to pass through to
 // handoff.Of when annotating a handoff's possibly-stale status.
 func Build(st *store.Store, searcher search.Searcher, anchor Anchor, altitude Altitude, budgetTokens int, workspaces []string) (Result, error) {
-	recs, said, err := resolve(st, searcher, anchor)
+	found, said, err := resolve(st, searcher, anchor, workspaces)
 	if err != nil {
 		return Result{}, err
 	}
 
+	ids := make([]string, len(found))
+	for i, f := range found {
+		ids[i] = f.rec.ID
+	}
+	confirmations, err := st.ConfirmationsOf(ids)
+	if err != nil {
+		return Result{}, fmt.Errorf("recall: %w", err)
+	}
+
 	stamper := newGitStamper(st)
-	items := make([]Item, len(recs))
-	for i, rec := range recs {
-		item, err := annotate(st, rec, workspaces)
+	items := make([]Item, len(found))
+	for i, f := range found {
+		item, err := annotateWith(st, f.rec, workspaces, f.handoff)
 		if err != nil {
 			return Result{}, err
 		}
 		if item.Status != StatusTombstoned {
-			if item.Git, err = stamper.stamp(rec); err != nil {
+			if item.Git, err = stamper.stamp(f.rec); err != nil {
 				return Result{}, err
 			}
+		}
+		item.Reached, item.OtherProject = f.reached, f.otherProject
+		item.ConfirmedBy = confirmations[f.rec.ID]
+		if item.ConfirmedBy == nil {
+			item.ConfirmedBy = []store.Confirmation{}
 		}
 		items[i] = item
 	}
@@ -246,22 +273,42 @@ type notices struct {
 	reason   string
 }
 
+// found is one record resolve found, with what the Ledger walk already
+// knows about it: how it was reached, whether it is from another Project
+// than the anchor record's, and its Handoff status (nil when not computed).
+type found struct {
+	rec          store.Record
+	reached      *graph.Reached
+	otherProject bool
+	handoff      *handoff.Status
+}
+
+// direct wraps records that are direct hits.
+func direct(recs []store.Record) []found {
+	out := make([]found, len(recs))
+	for i, rec := range recs {
+		out[i] = found{rec: rec}
+	}
+	return out
+}
+
 // resolve turns anchor into an ordered record set, before status
 // annotation or altitude rendering: project and record anchors are already
-// in sequence order (RecordsForProjectAll / RecordsByIDs); a text anchor's
+// in sequence order (RecordsForProjectAll / graph.Walk); a text anchor's
 // search hits are re-ordered into sequence order the same way, so every
 // anchor kind's output obeys the one ordering rule (SCHEMA.md invariant
 // 10: order by sequence, never ts).
-func resolve(st *store.Store, searcher search.Searcher, anchor Anchor) ([]store.Record, notices, error) {
+func resolve(st *store.Store, searcher search.Searcher, anchor Anchor, workspaces []string) ([]found, notices, error) {
 	switch anchor.Kind {
 	case AnchorProject:
 		recs, err := projectRecords(st, anchor)
-		return recs, notices{}, err
+		return direct(recs), notices{}, err
 	case AnchorRecord:
-		recs, err := resolveRecordAnchor(st, anchor.RecordID)
-		return recs, notices{}, err
+		f, err := resolveRecordAnchor(st, searcher, anchor.RecordID, workspaces)
+		return f, notices{}, err
 	case AnchorText:
-		return resolveTextAnchor(st, searcher, anchor)
+		recs, n, err := resolveTextAnchor(st, searcher, anchor)
+		return direct(recs), n, err
 	default:
 		return nil, notices{}, fmt.Errorf("recall: unknown anchor kind %q", anchor.Kind)
 	}
@@ -283,14 +330,14 @@ func projectRecords(st *store.Store, anchor Anchor) ([]store.Record, error) {
 	return recs, nil
 }
 
-// resolveRecordAnchor resolves idOrPrefix to a record, then breadth-first
-// walks every edge touching it — any of the six edge types, both
-// directions — for edgeWalkHops hops, and returns the anchor record plus
-// everything reached, newest first by sequence. An anchor that resolves to
-// no record (unknown id, or an ambiguous short prefix) returns an empty
-// set, not an error: recall answering "nothing here" is this anchor's
-// honest empty state.
-func resolveRecordAnchor(st *store.Store, idOrPrefix string) ([]store.Record, error) {
+// resolveRecordAnchor resolves idOrPrefix to a record, then walks the
+// Ledger from it (graph.Walk, graph.DefaultHops) and returns what the walk
+// reached, newest first by sequence, minus Tombstoned Records: recall
+// never shows one (#32), though the walk goes on through it. An anchor that
+// resolves to no record (unknown id, or an ambiguous short prefix) returns
+// an empty set, not an error: recall answering "nothing here" is this
+// anchor's honest empty state.
+func resolveRecordAnchor(st *store.Store, searcher search.Searcher, idOrPrefix string, workspaces []string) ([]found, error) {
 	root, ok, err := st.FindRecordByIDPrefix(idOrPrefix)
 	if err != nil {
 		return nil, fmt.Errorf("recall: record anchor: %w", err)
@@ -299,36 +346,22 @@ func resolveRecordAnchor(st *store.Store, idOrPrefix string) ([]store.Record, er
 		return nil, nil
 	}
 
-	visited := map[string]bool{root.ID: true}
-	frontier := []string{root.ID}
-	for hop := 0; hop < edgeWalkHops && len(frontier) > 0; hop++ {
-		var next []string
-		for _, id := range frontier {
-			edges, err := st.EdgesTouching(id)
-			if err != nil {
-				return nil, fmt.Errorf("recall: record anchor edge walk: %w", err)
-			}
-			for _, e := range edges {
-				for _, other := range [2]string{e.FromID, e.ToID} {
-					if !visited[other] {
-						visited[other] = true
-						next = append(next, other)
-					}
-				}
-			}
-		}
-		frontier = next
-	}
-
-	ids := make([]string, 0, len(visited))
-	for id := range visited {
-		ids = append(ids, id)
-	}
-	recs, err := st.RecordsByIDs(ids)
+	g, err := graph.Walk(context.Background(), graph.Source{Store: st, Searcher: searcher, Workspaces: workspaces},
+		[]string{root.ID}, graph.Limits{Hops: graph.DefaultHops})
 	if err != nil {
 		return nil, fmt.Errorf("recall: record anchor: %w", err)
 	}
-	return recs, nil
+	var out []found
+	for _, n := range g.Nodes {
+		if n.Status == graph.StatusTombstoned {
+			continue
+		}
+		out = append(out, found{
+			rec: n.Record, reached: n.Reached, handoff: n.Handoff,
+			otherProject: n.Record.ProjectKey != root.ProjectKey,
+		})
+	}
+	return out, nil
 }
 
 // handoffKindWords are the query words that name the handoff record kind
@@ -402,17 +435,20 @@ func namesHandoffKind(query string) bool {
 // with callers (the `records` CLI) that list records outside a recall
 // narrative but must label them exactly as recall does.
 func Annotate(st *store.Store, rec store.Record, workspaces []string) (Item, error) {
-	return annotate(st, rec, workspaces)
+	return annotateWith(st, rec, workspaces, nil)
 }
 
-// annotate builds an Item from rec: tier carried verbatim, status derived
+// annotateWith builds an Item from rec: tier carried verbatim, status derived
 // in a fixed precedence — tombstoned first (text omitted per SCHEMA.md
 // invariant 1, so nothing downstream can leak it back in), then superseded,
 // then contradicted, else current. A record can technically satisfy more
 // than one condition (e.g. a tombstoned record superseded before deletion);
 // this precedence picks the single status callers see, always the
 // strongest one, rather than leaving it ambiguous which wins.
-func annotate(st *store.Store, rec store.Record, workspaces []string) (Item, error) {
+//
+// A Handoff's status (handoff.Of) is hs when the caller already has it,
+// else computed here, and set on Item.Handoff whatever the recall status.
+func annotateWith(st *store.Store, rec store.Record, workspaces []string, hs *handoff.Status) (Item, error) {
 	edges, err := st.EdgesTouching(rec.ID)
 	if err != nil {
 		return Item{}, fmt.Errorf("recall: annotate %s: %w", rec.ID, err)
@@ -429,6 +465,7 @@ func annotate(st *store.Store, rec store.Record, workspaces []string) (Item, err
 		Next:             rec.Next,
 		Status:           StatusCurrent,
 		Edges:            edges,
+		ProjectKey:       rec.ProjectKey,
 	}
 	if rec.ExpiresAt != nil {
 		item.ExpiresAt = rec.ExpiresAt
@@ -438,6 +475,17 @@ func annotate(st *store.Store, rec store.Record, workspaces []string) (Item, err
 		item.Text = ""
 		item.Next = ""
 		return item, nil
+	}
+
+	if rec.Kind == store.KindHandoff {
+		if hs == nil {
+			status, err := handoff.Of(st, rec, workspaces)
+			if err != nil {
+				return Item{}, fmt.Errorf("recall: annotate %s: %w", rec.ID, err)
+			}
+			hs = &status
+		}
+		item.Handoff = hs
 	}
 
 	for _, e := range edges {
@@ -457,15 +505,11 @@ func annotate(st *store.Store, rec store.Record, workspaces []string) (Item, err
 	// reasons (FreshnessContradicted), affirm-aware in a way the plain
 	// StatusContradicted check below is not, so a handoff never falls
 	// through to that check at all — flagged or not.
-	if rec.Kind == store.KindHandoff {
-		status, err := handoff.Of(st, rec, workspaces)
-		if err != nil {
-			return Item{}, fmt.Errorf("recall: annotate %s: %w", rec.ID, err)
-		}
-		item.Done, item.DoneAt = status.Done, status.DoneAt
-		if status.PossiblyStale() {
+	if item.Handoff != nil {
+		item.Done, item.DoneAt = item.Handoff.Done, item.Handoff.DoneAt
+		if item.Handoff.PossiblyStale() {
 			item.Status = StatusPossiblyStale
-			item.StaleReasons = status.Reasons
+			item.StaleReasons = item.Handoff.Reasons
 		}
 		return item, nil
 	}
@@ -550,9 +594,15 @@ func renderItem(item Item, altitude Altitude) string {
 	if item.Git != nil {
 		header += " · " + gitLabel(item.Git)
 	}
-	switch altitude {
-	case AltitudeHeadline:
+	if item.OtherProject {
+		header += " · project " + item.ProjectKey
+	}
+	reached := reachedLabel(item.Reached)
+	if altitude == AltitudeHeadline {
 		out := header
+		if reached != "" {
+			out += " · " + reached
+		}
 		if fl := firstLine(item.Text); fl != "" {
 			out += " · " + fl
 		}
@@ -560,6 +610,11 @@ func renderItem(item Item, altitude Altitude) string {
 			out += " · Next: " + nl
 		}
 		return out
+	}
+	if reached != "" {
+		header += "\n" + reached
+	}
+	switch altitude {
 	case AltitudeSummary:
 		return withNext(renderBody(header, item.Text, summaryBodyChars), item.Next)
 	case AltitudeFull:
@@ -567,6 +622,20 @@ func renderItem(item Item, altitude Altitude) string {
 	default:
 		return header
 	}
+}
+
+// reachedLabel is how an item was reached, e.g. "← informs `a1b2c3d4`":
+// the arrow points along the edge relative to the item, so "←" is From ->
+// item and "→" is item -> From. "" for a direct hit.
+func reachedLabel(r *graph.Reached) string {
+	if r == nil || r.Via != graph.ViaEdge {
+		return ""
+	}
+	arrow := "←"
+	if r.Direction == graph.DirectionIn {
+		arrow = "→"
+	}
+	return arrow + " " + string(r.Type) + " `" + shortID(r.From) + "`"
 }
 
 // withNext appends a handoff's next step on its own "Next:" line.

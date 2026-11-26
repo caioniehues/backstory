@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RidgetopAi/backstory/internal/handoff"
 	"github.com/RidgetopAi/backstory/internal/recall"
 	"github.com/RidgetopAi/backstory/internal/search"
 	"github.com/RidgetopAi/backstory/internal/store"
@@ -123,33 +124,46 @@ func Build(p Params) (string, error) {
 		return "", fmt.Errorf("export: contradiction count: %w", err)
 	}
 
-	handoff, hasHandoff := latestHandoff(result.Items)
-	staleHandoff := hasHandoff && handoff.Status == recall.StatusPossiblyStale
+	resume, hasHandoff, err := latestHandoff(p.Store, result.Items)
+	if err != nil {
+		return "", fmt.Errorf("export: resume handoff: %w", err)
+	}
+	staleHandoff := hasHandoff && resume.Status == recall.StatusPossiblyStale
 
 	var b strings.Builder
 	writeHeader(&b, p.ProjectKey, now)
-	writeResumeSection(&b, handoff, hasHandoff, staleHandoff)
+	writeResumeSection(&b, resume, hasHandoff, staleHandoff)
 	writeAttentionSection(&b, draftCount, contradictionCount, staleHandoff)
 	writeDecisionsAndNotesSection(&b, result.Items, p.Altitude)
 	return b.String(), nil
 }
 
-// latestHandoff returns the newest non-tombstoned handoff in items by
-// store.NewerHandoff's rule (ts, then id) — the same one the SessionStart
-// block's Resume and This Week use. items arrive in insertion order, which a
-// sync scrambles, so position alone does not say which handoff is newest.
-func latestHandoff(items []recall.Item) (recall.Item, bool) {
-	var best recall.Item
-	found := false
+// latestHandoff returns the item of the newest Current Handoff in items
+// (handoff.Newest: ts then id, never superseded or Tombstoned), the rule the
+// SessionStart block's Resume handoff and This Week use. items arrive in
+// insertion order, which a sync scrambles, so position alone does not say
+// which Handoff is newest.
+func latestHandoff(st *store.Store, items []recall.Item) (recall.Item, bool, error) {
+	var ids []string
+	byID := map[string]recall.Item{}
 	for _, item := range items {
-		if item.Kind != store.KindHandoff || item.Status == recall.StatusTombstoned {
-			continue
-		}
-		if !found || store.NewerHandoff(store.Record{ID: item.ID, TS: item.TS}, store.Record{ID: best.ID, TS: best.TS}) {
-			best, found = item, true
+		if item.Kind == store.KindHandoff {
+			ids = append(ids, item.ID)
+			byID[item.ID] = item
 		}
 	}
-	return best, found
+	if len(ids) == 0 {
+		return recall.Item{}, false, nil
+	}
+	recs, err := st.RecordsByIDs(ids)
+	if err != nil {
+		return recall.Item{}, false, err
+	}
+	h, ok, err := handoff.Newest(st, recs)
+	if err != nil || !ok {
+		return recall.Item{}, false, err
+	}
+	return byID[h.ID], true, nil
 }
 
 // mirrorHeaderFormat names Backstory, the project, the generation time and

@@ -340,8 +340,9 @@ var handoffKindWords = map[string]bool{"handoff": true, "handoffs": true, "resum
 // resolveTextAnchor takes searcher's hits for the query (a Handoff's next
 // text included), adds every handoff at the location when the query names
 // the handoff kind, and re-orders the match set into sequence order. When
-// nothing matches it falls back to the location's latest handoff and says
-// so in the returned notice, which also carries the searcher's reason.
+// nothing matches it falls back to the location's newest Current Handoff
+// (handoff.Newest, the Resume handoff's ordering) and says so in the
+// returned notice, which also carries the searcher's reason.
 func resolveTextAnchor(st *store.Store, searcher search.Searcher, anchor Anchor) ([]store.Record, notices, error) {
 	found, err := searcher.Search(context.Background(), search.Query{
 		Text: anchor.Text, ProjectKey: anchor.ProjectKey, Scope: anchor.Scope, Limit: maxTextResults,
@@ -363,22 +364,23 @@ func resolveTextAnchor(st *store.Store, searcher search.Searcher, anchor Anchor)
 		if err != nil {
 			return nil, notices{}, err
 		}
-		var latest string
-		for _, rec := range all {
-			if rec.Kind != store.KindHandoff || rec.TombstonedAt != nil {
-				continue
-			}
-			if latest == "" {
-				latest = rec.ID
-			}
-			if wantHandoffs && !seen[rec.ID] {
-				seen[rec.ID] = true
-				ids = append(ids, rec.ID)
+		if wantHandoffs {
+			for _, rec := range all {
+				if rec.Kind == store.KindHandoff && rec.TombstonedAt == nil && !seen[rec.ID] {
+					seen[rec.ID] = true
+					ids = append(ids, rec.ID)
+				}
 			}
 		}
-		if len(ids) == 0 && latest != "" {
-			ids = append(ids, latest)
-			n.fallback = fmt.Sprintf("no match for %s; latest handoff shown", anchor.Text)
+		if len(ids) == 0 {
+			latest, ok, err := handoff.Newest(st, all)
+			if err != nil {
+				return nil, notices{}, fmt.Errorf("recall: text anchor: %w", err)
+			}
+			if ok {
+				ids = append(ids, latest.ID)
+				n.fallback = fmt.Sprintf("no match for %s; latest handoff shown", anchor.Text)
+			}
 		}
 	}
 	recs, err := st.RecordsByIDs(ids)

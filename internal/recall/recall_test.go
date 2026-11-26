@@ -619,6 +619,40 @@ func TestBuildTextAnchorNoMatchFallsBackToLatestHandoff(t *testing.T) {
 	}
 }
 
+// The no-match stand-in is the newest Current Handoff, by ts then id, as the
+// Resume handoff is (#3): never the last one inserted (a sync inserts an
+// older Handoff after a newer one), never a superseded one.
+func TestBuildTextAnchorNoMatchFallsBackToTheNewestCurrentHandoff(t *testing.T) {
+	st := newTestStore(t)
+	mustUpsertProject(t, st, "proj-a")
+	sid := mustStartSession(t, st, "proj-a")
+	handoffAt := func(ts time.Time) string {
+		t.Helper()
+		var id string
+		if err := st.DB().QueryRow(`INSERT INTO records (id, ts, kind, tier, text, about, session_id, project_key, evidence)
+			VALUES (lower(hex(randomblob(16))), ?, 'handoff', 'agent-declared', 'h', '[]', ?, 'proj-a', '[]') RETURNING id`,
+			ts.UnixNano(), sid).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	now := time.Now()
+	superseded := handoffAt(now.Add(2 * time.Hour))
+	newest := handoffAt(now.Add(time.Hour))
+	handoffAt(now) // arrives last, written first
+	mustLinkEdge(t, st, newest, superseded, store.EdgeSupersedes, "agent")
+
+	for name, a := range textAnchors(t, st, "proj-a", "zzqx nonexistent") {
+		res, err := Build(st, search.New(st), a, AltitudeFull, testBudget, nil)
+		if err != nil {
+			t.Fatalf("%s: Build: %v", name, err)
+		}
+		if got := itemIDs(res.Items); len(got) != 1 || got[0] != newest {
+			t.Errorf("%s: items = %v, want [%s]", name, got, newest)
+		}
+	}
+}
+
 // TestRenderedShowsFromDeviceForImportedRecordOnly pins the ` · from <device>`
 // header suffix at summary and full altitude: the imported record carries it,
 // the local one does not (critic T2 on task 0abc562f).

@@ -61,7 +61,7 @@ func TestDaemonStartEndsSessionsLeftLiveByPreviousRun(t *testing.T) {
 	defer func() {
 		_ = cmd.Process.Signal(syscall.SIGTERM)
 		select {
-		case <-waitDone:
+		case <-waitDone: //nolint:errcheck // only waiting for the daemon to exit
 		case <-time.After(2 * time.Second):
 			_ = cmd.Process.Kill()
 		}
@@ -144,7 +144,7 @@ func TestDaemonStartRecordsGitStateForSessionsLeftLive(t *testing.T) {
 	defer func() {
 		_ = cmd.Process.Signal(syscall.SIGTERM)
 		select {
-		case <-waitDone:
+		case <-waitDone: //nolint:errcheck // only waiting for the daemon to exit
 		case <-time.After(2 * time.Second):
 			_ = cmd.Process.Kill()
 		}

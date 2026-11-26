@@ -178,7 +178,7 @@ func stopDaemon(t *testing.T, cmd *exec.Cmd) {
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
 	select {
-	case <-done:
+	case <-done: //nolint:errcheck // only waiting for the process to exit
 	case <-time.After(2 * time.Second):
 		_ = cmd.Process.Kill()
 	}

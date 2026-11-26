@@ -9,7 +9,6 @@ import (
 	"github.com/RidgetopAi/backstory/internal/block"
 	"github.com/RidgetopAi/backstory/internal/project"
 	"github.com/RidgetopAi/backstory/internal/recall"
-	"github.com/RidgetopAi/backstory/internal/search"
 	"github.com/RidgetopAi/backstory/internal/store"
 )
 
@@ -19,9 +18,10 @@ const recallDefaultAltitude = recall.AltitudeSummary
 
 // runRecall is `backstory recall [query|id] [--project KEY|--here]
 // [--altitude headline|summary|full] [--budget N] [--json]`: a read-only
-// human-path command that opens the store directly and never dials the
-// daemon socket (PLAN.md §Phase 4 CLI, decision d9d456e7's "commands
-// reading the store directly").
+// human-path command that opens the store directly (PLAN.md §Phase 4 CLI,
+// decision d9d456e7's "commands reading the store directly"). The one
+// thing it asks the daemon is a text query's embedding, while embeddings
+// are on (cliSearcher, #43); without a daemon it searches FTS-only.
 func runRecall(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("recall", flag.ContinueOnError)
 	projectFlag := fs.String("project", "", "project key (default: the git repo of the current directory)")
@@ -69,7 +69,7 @@ func runRecall(args []string, stdout, stderr io.Writer) int {
 	// or internal/store (task 482b2320, decision f3fa04c7's clause 7).
 	workspaces, _ := project.DefaultWorkspaceDirs()
 
-	result, err := recall.Build(st, search.New(st), anchor, altitude, *budget, workspaces)
+	result, err := recall.Build(st, cliSearcher(st), anchor, altitude, *budget, workspaces)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "backstory recall:", err)
 		return 1
@@ -118,14 +118,19 @@ type recallItemJSON struct {
 // recallOutputJSON is `backstory recall --json`'s top-level shape:
 // ProjectKey is always set, even when Items is empty, so an empty result
 // still names the project it is honestly empty for (DONE WHEN clause 3).
+//
+// Notice is recall.Result.Notice, set only for a text anchor: the
+// latest-Handoff fallback and why the search wasn't fully semantic
+// ("embeddings off", "embeddings unavailable: daemon unreachable", ...).
 type recallOutputJSON struct {
 	ProjectKey string           `json:"project_key"`
 	Altitude   string           `json:"altitude"`
+	Notice     string           `json:"notice,omitempty"`
 	Items      []recallItemJSON `json:"items"`
 }
 
 func printRecallJSON(stdout io.Writer, projectKey string, altitude recall.Altitude, result recall.Result) int {
-	out := recallOutputJSON{ProjectKey: projectKey, Altitude: string(altitude), Items: []recallItemJSON{}}
+	out := recallOutputJSON{ProjectKey: projectKey, Altitude: string(altitude), Notice: result.Notice, Items: []recallItemJSON{}}
 	for _, item := range result.Items {
 		out.Items = append(out.Items, recallItemJSON{
 			ID:                    item.ID,

@@ -109,6 +109,10 @@ func runDaemon(_ []string, stdout, stderr io.Writer) int {
 	}
 	defer func() { _ = st.Close() }()
 
+	// Closed after the socket server's handlers are done, before the store.
+	queryServer := startQueryServer(st, sockPath, logger)
+	defer queryServer.Close()
+
 	if n, err := mcp.EndOrphanedSessions(st, project.RealGit{}, logger, captureOff); err != nil {
 		logger.Printf("end sessions left live by a previous run: %v", err)
 	} else if n > 0 {
@@ -134,12 +138,13 @@ func runDaemon(_ []string, stdout, stderr io.Writer) int {
 	}
 
 	sessions := mcp.NewSessionRegistry()
-	searcher := search.New(st)
+	searcher := search.New(st, search.WithEmbedder(queryServer))
 	srv, err := socket.Listen(sockPath, resolver, func(id ident.Identity, conn net.Conn) {
 		defer func() { _ = conn.Close() }()
 		logIdentity(logger, id)
 		testSlowHandler()
-		mcp.ServeDaemonConn(id, conn, st, searcher, procfs, project.RealGit{}, logger, sessions, captureOff, workspaceDirs)
+		mcp.ServeDaemonConn(id, conn, st, searcher, procfs, project.RealGit{}, logger, sessions, captureOff, workspaceDirs,
+			mcp.WithQueryEmbedder(queryServer))
 	})
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "backstory daemon:", err)

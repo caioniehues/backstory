@@ -59,7 +59,7 @@ func runExport(args []string, stdout, stderr io.Writer) int {
 	// or internal/recall (task 482b2320, decision f3fa04c7's clause 7).
 	workspaces, _ := project.DefaultWorkspaceDirs()
 
-	rendered, err := export.Build(export.Params{Store: st, ProjectKey: projectKey, Scope: &scope, Altitude: altitude, WorkspaceDirs: workspaces})
+	rendered, err := export.Build(export.Params{Store: st, Searcher: cliSearcher(st), ProjectKey: projectKey, Scope: &scope, Altitude: altitude, WorkspaceDirs: workspaces})
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "backstory export:", err)
 		return 1

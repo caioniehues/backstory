@@ -1,6 +1,7 @@
 package store
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -144,5 +145,56 @@ func TestSchemaDocMatchesMigrations(t *testing.T) {
 	if len(drift) > 0 {
 		sort.Strings(drift)
 		t.Errorf("SCHEMA.md has drifted from the migrations (%d):\n  %s", len(drift), strings.Join(drift, "\n  "))
+	}
+}
+
+// schemaDocEmbedKey is an embed.* settings-key constant: a Setting* or *Key
+// name (embed.SettingRuntime, store.DrainLeaseKey, drain.ReportKey) set to
+// an "embed." literal. Other "embed.*" literals (embed.sock) aren't keys.
+var schemaDocEmbedKey = regexp.MustCompile(`\b(?:Setting\w*|\w*Key)\s*=\s*"(embed\.[a-z0-9_]+)"`)
+
+// Every embed.* settings-key constant in the code is documented in
+// SCHEMA.md, so a new Device-local key can't land undocumented (house rule
+// 4: a test, not a prose rule). Keys are found in the non-test Go source
+// under internal/ and cmd/.
+func TestEveryEmbedSettingsKeyIsInSchemaDoc(t *testing.T) {
+	doc, err := os.ReadFile(filepath.Join("..", "..", "SCHEMA.md"))
+	if err != nil {
+		t.Fatalf("read SCHEMA.md: %v", err)
+	}
+	keys := map[string]string{}
+	for _, dir := range []string{"..", filepath.Join("..", "..", "cmd")} {
+		err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+				return nil
+			}
+			b, err := os.ReadFile(path) //nolint:gosec // path comes from walking this repo's own source tree
+			if err != nil {
+				return err
+			}
+			for _, m := range schemaDocEmbedKey.FindAllStringSubmatch(string(b), -1) {
+				keys[m[1]] = path
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(keys) == 0 {
+		t.Fatal("found no embed.* settings key in the source; the scan is broken")
+	}
+	var missing []string
+	for key, path := range keys {
+		if !strings.Contains(string(doc), "`"+key+"`") {
+			missing = append(missing, key+" ("+path+")")
+		}
+	}
+	if len(missing) > 0 {
+		sort.Strings(missing)
+		t.Errorf("settings keys used in code but not in SCHEMA.md:\n  %s", strings.Join(missing, "\n  "))
 	}
 }

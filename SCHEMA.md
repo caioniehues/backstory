@@ -307,7 +307,10 @@ deletes the row in the same transaction as the `records_fts` scrub; it is the on
 Record's vector is deleted. `backstory embed --drop` deletes every row, then checkpoints the WAL
 (`secure_delete` is on for every connection), as a Tombstone does. The opt-in switch is
 in Device-local, never-synced `settings` keys (`embed.runtime`, `embed.model`,
-`embed.device`, `embed.drain_lease`, `embed.drain_report`). `embed.drain_lease` is `"<pid> <expiry ns>"`:
+`embed.device`, `embed.model_sha256`, `embed.drain_lease`, `embed.drain_report`). `embed.model_sha256`
+caches the model file's sha256 for the fingerprint as `"<size> <mtime ns> <sha256> <path>"`, so the
+file is hashed again only when its path, size or mtime changes; `--off` leaves it for the next `--on`.
+`embed.drain_lease` is `"<pid> <expiry ns>"`:
 one drain per Device, renewed after each batch. `embed.drain_report` is the drain's JSON status for
 `backstory status` (fingerprint, skipped count, last failure, setup error): counts only, never a
 Record id, as skipped Records are tracked in the drain's memory only. `embed.device` holds a stable match (device name or PCI

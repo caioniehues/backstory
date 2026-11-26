@@ -152,7 +152,7 @@ func (e *env) hasVector(id string) bool {
 	return ok
 }
 
-func pass(t *testing.T, d *Drain) (Outcome, error) {
+func pass(t *testing.T, d *Drain) (PassResult, error) {
 	t.Helper()
 	return d.Pass(context.Background())
 }

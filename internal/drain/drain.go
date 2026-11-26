@@ -54,28 +54,28 @@ type Embedder interface {
 type Opener func(ctx context.Context, setup embed.Setup) (Embedder, string, error)
 
 // OpenBatch is the real Opener: embed.NewBatch checks the files and
-// resolves the device, and the fingerprint is the cached model hash, the
-// template version, the device's backend and embed.Dim.
+// resolves the device, and the fingerprint is embed.FingerprintFor that
+// device.
 func OpenBatch(s embed.Settings) Opener {
 	return func(ctx context.Context, setup embed.Setup) (Embedder, string, error) {
 		b, err := embed.NewBatch(ctx, setup)
 		if err != nil {
 			return nil, "", err
 		}
-		hash, err := embed.ModelHash(s, setup.Model)
+		fp, err := embed.FingerprintFor(s, setup.Model, b.Device())
 		if err != nil {
 			return nil, "", err
 		}
-		return b, embed.Fingerprint(hash, b.Device().Backend, embed.Dim), nil
+		return b, fp, nil
 	}
 }
 
-// Outcome is how a pass ended.
-type Outcome int
+// PassResult is how a pass ended.
+type PassResult int
 
 const (
 	// Drained: the queue is empty, apart from skipped Records.
-	Drained Outcome = iota
+	Drained PassResult = iota
 	// Off: embeddings are off (or were turned off mid-pass).
 	Off
 	// Deferred: another drainer holds the lease.
@@ -84,8 +84,8 @@ const (
 	Failed
 )
 
-func (o Outcome) String() string {
-	switch o {
+func (r PassResult) String() string {
+	switch r {
 	case Drained:
 		return "drained"
 	case Off:
@@ -174,7 +174,7 @@ func (d *Drain) Skipped() int {
 // embed counts toward its skip; if nothing embeds the runtime is failing
 // and the pass ends Failed with its error. An empty queue costs one query
 // and takes no lease.
-func (d *Drain) Pass(ctx context.Context) (Outcome, error) {
+func (d *Drain) Pass(ctx context.Context) (PassResult, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	st := d.cfg.Store

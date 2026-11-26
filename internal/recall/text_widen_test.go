@@ -127,7 +127,7 @@ func TestBuildTextAnchorHandoffsLeaveOutSupersededOnes(t *testing.T) {
 	st := newTestStore(t)
 	mustUpsertProject(t, st, "proj-a")
 	sid := mustStartSession(t, st, "proj-a")
-	kept := insertHandoff(t, st, sid, "an older handoff, still live", "")
+	kept := insertHandoff(t, st, sid, "an older handoff, still current", "")
 	dropped := insertHandoff(t, st, sid, "the newest handoff, superseded", "")
 	replacement := mustInsertRecord(t, st, sid, "proj-a", store.KindDecision, "replaces the newest handoff")
 	mustLinkEdge(t, st, replacement, dropped, store.EdgeSupersedes, sid)

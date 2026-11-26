@@ -2,8 +2,6 @@ package recall
 
 import (
 	"fmt"
-	"slices"
-	"strings"
 
 	"github.com/RidgetopAi/backstory/internal/graph"
 )
@@ -21,18 +19,6 @@ func withNeighbours(limits graph.Limits, scope graph.Scope) graph.Limits {
 // one, else its Project. graph.Scope.Has is the rule for what is inside it.
 func anchorScope(anchor Anchor) graph.Scope {
 	return graph.Scope{ProjectKey: anchor.ProjectKey, Location: anchor.Scope}
-}
-
-// joinReasons is reasons ("; "-joined) plus each of more's not already
-// there.
-func joinReasons(reasons, more string) string {
-	var all []string
-	for _, r := range strings.Split(reasons+"; "+more, "; ") {
-		if r != "" && !slices.Contains(all, r) {
-			all = append(all, r)
-		}
-	}
-	return strings.Join(all, "; ")
 }
 
 // closerNeighbour is the budget's Neighbour tier, after direct hits and

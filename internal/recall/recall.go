@@ -200,8 +200,8 @@ type Item struct {
 	// Handoff is handoff's status for a Handoff that isn't Tombstoned,
 	// whatever its recall Status; nil for any other item.
 	Handoff *handoff.Status
-	// ConfirmedBy is every live Done, Affirm or Promote confirming the
-	// record, oldest first; never nil.
+	// ConfirmedBy is every Done, Affirm or Promote confirming the record
+	// that isn't Tombstoned, oldest first; never nil.
 	ConfirmedBy []store.Confirmation
 }
 
@@ -260,9 +260,6 @@ func Build(st *store.Store, searcher search.Searcher, anchor Anchor, altitude Al
 		}
 		item.Reached, item.OtherProject = f.reached, f.otherProject
 		item.ConfirmedBy = confirmations[f.rec.ID]
-		if item.ConfirmedBy == nil {
-			item.ConfirmedBy = []store.Confirmation{}
-		}
 		items[i] = item
 	}
 
@@ -286,10 +283,10 @@ type notices struct {
 	reason   string
 }
 
-// found is one record resolve found, with what the Ledger walk already
+// resolved is one record resolve found, with what the Ledger walk already
 // knows about it: how it was reached, whether it is from another Project
-// than the anchor record's, and its Handoff status (nil when not computed).
-type found struct {
+// than the anchor's, and its Handoff status (nil when not computed).
+type resolved struct {
 	rec          store.Record
 	reached      *graph.Reached
 	otherProject bool
@@ -297,10 +294,10 @@ type found struct {
 }
 
 // direct wraps records that are direct hits.
-func direct(recs []store.Record) []found {
-	out := make([]found, len(recs))
+func direct(recs []store.Record) []resolved {
+	out := make([]resolved, len(recs))
 	for i, rec := range recs {
-		out[i] = found{rec: rec}
+		out[i] = resolved{rec: rec}
 	}
 	return out
 }
@@ -311,7 +308,7 @@ func direct(recs []store.Record) []found {
 // search hits are re-ordered into sequence order the same way, so every
 // anchor kind's output obeys the one ordering rule (SCHEMA.md invariant
 // 10: order by sequence, never ts).
-func resolve(st *store.Store, searcher search.Searcher, anchor Anchor, workspaces []string) ([]found, notices, error) {
+func resolve(st *store.Store, searcher search.Searcher, anchor Anchor, workspaces []string) ([]resolved, notices, error) {
 	switch anchor.Kind {
 	case AnchorProject:
 		recs, err := projectRecords(st, anchor)
@@ -353,7 +350,7 @@ func projectRecords(st *store.Store, anchor Anchor) ([]store.Record, error) {
 // (unknown id, or an ambiguous short prefix) returns an empty set, not an
 // error: recall answering "nothing here" is this anchor's honest empty
 // state.
-func resolveRecordAnchor(st *store.Store, searcher search.Searcher, idOrPrefix string, workspaces []string) ([]found, notices, error) {
+func resolveRecordAnchor(st *store.Store, searcher search.Searcher, idOrPrefix string, workspaces []string) ([]resolved, notices, error) {
 	root, ok, err := st.FindRecordByIDPrefix(idOrPrefix)
 	if err != nil {
 		return nil, notices{}, fmt.Errorf("recall: record anchor: %w", err)
@@ -362,20 +359,24 @@ func resolveRecordAnchor(st *store.Store, searcher search.Searcher, idOrPrefix s
 		return nil, notices{}, nil
 	}
 
-	limits := withNeighbours(graph.Limits{Hops: graph.DefaultHops}, graph.Scope{ProjectKey: root.ProjectKey})
+	// A record anchor's scope is its root Record's Project, never a Work
+	// location: a record id names no location, so its Neighbours come only
+	// from that Project, and an item outside it is labelled with its own.
+	scope := graph.Scope{ProjectKey: root.ProjectKey}
+	limits := withNeighbours(graph.Limits{Hops: graph.DefaultHops}, scope)
 	g, err := graph.Walk(context.Background(), graph.Source{Store: st, Searcher: searcher, Workspaces: workspaces},
 		[]string{root.ID}, limits)
 	if err != nil {
 		return nil, notices{}, fmt.Errorf("recall: record anchor: %w", err)
 	}
-	var out []found
-	for _, n := range g.Nodes {
-		if n.Status == graph.StatusTombstoned {
+	var out []resolved
+	for _, node := range g.Nodes {
+		if node.Status == graph.StatusTombstoned {
 			continue
 		}
-		out = append(out, found{
-			rec: n.Record, reached: n.Reached, handoff: n.Handoff,
-			otherProject: n.Record.ProjectKey != root.ProjectKey,
+		out = append(out, resolved{
+			rec: node.Record, reached: node.Reached, handoff: node.Handoff,
+			otherProject: !scope.Has(st, node.Record),
 		})
 	}
 	return out, notices{reason: g.Reason}, nil
@@ -398,7 +399,7 @@ var handoffKindWords = map[string]bool{"handoff": true, "handoffs": true, "resum
 // sequence order. When nothing matches it falls back to the location's
 // latest handoff and says so in the returned notice, which also carries
 // the searcher's reasons, for its search and for the Neighbours, each once.
-func resolveTextAnchor(st *store.Store, searcher search.Searcher, anchor Anchor, workspaces []string) ([]found, notices, error) {
+func resolveTextAnchor(st *store.Store, searcher search.Searcher, anchor Anchor, workspaces []string) ([]resolved, notices, error) {
 	res, err := searcher.Search(context.Background(), search.Query{
 		Text: anchor.Text, ProjectKey: anchor.ProjectKey, Scope: anchor.Scope, Limit: maxTextResults, CurrentOnly: true,
 	})
@@ -413,7 +414,7 @@ func resolveTextAnchor(st *store.Store, searcher search.Searcher, anchor Anchor,
 	}
 	seeds := ids[:min(len(ids), textAnchorSeeds)]
 
-	n := notices{reason: res.Reason}
+	said := notices{reason: res.Reason}
 	wantHandoffs := namesHandoffKind(anchor.Text)
 	if wantHandoffs || len(ids) == 0 {
 		all, err := projectRecords(st, anchor)
@@ -425,8 +426,8 @@ func resolveTextAnchor(st *store.Store, searcher search.Searcher, anchor Anchor,
 			if rec.Kind != store.KindHandoff || rec.TombstonedAt != nil {
 				continue
 			}
-			if sup, err := superseded(st, rec.ID); err != nil {
-				return nil, notices{}, err
+			if sup, err := st.IsSuperseded(rec.ID); err != nil {
+				return nil, notices{}, fmt.Errorf("recall: text anchor: %w", err)
 			} else if sup {
 				continue
 			}
@@ -441,7 +442,7 @@ func resolveTextAnchor(st *store.Store, searcher search.Searcher, anchor Anchor,
 		if len(ids) == 0 && latest != "" {
 			seen[latest] = true
 			ids = append(ids, latest)
-			n.fallback = fmt.Sprintf("no match for %s; latest handoff shown", anchor.Text)
+			said.fallback = fmt.Sprintf("no match for %s; latest handoff shown", anchor.Text)
 		}
 	}
 
@@ -451,7 +452,7 @@ func resolveTextAnchor(st *store.Store, searcher search.Searcher, anchor Anchor,
 	if err != nil {
 		return nil, notices{}, fmt.Errorf("recall: text anchor: %w", err)
 	}
-	n.reason = joinReasons(n.reason, g.Reason)
+	said.reason = search.JoinReasons(said.reason, g.Reason)
 	widened := map[string]graph.Node{}
 	for _, node := range g.Nodes {
 		if seen[node.Record.ID] || node.Status == graph.StatusTombstoned {
@@ -465,29 +466,15 @@ func resolveTextAnchor(st *store.Store, searcher search.Searcher, anchor Anchor,
 	if err != nil {
 		return nil, notices{}, fmt.Errorf("recall: text anchor: %w", err)
 	}
-	out := make([]found, len(recs))
+	out := make([]resolved, len(recs))
 	for i, rec := range recs {
-		out[i] = found{rec: rec}
+		out[i] = resolved{rec: rec}
 		if node, ok := widened[rec.ID]; ok {
 			out[i].reached, out[i].handoff = node.Reached, node.Handoff
 			out[i].otherProject = !scope.Has(st, rec)
 		}
 	}
-	return out, n, nil
-}
-
-// superseded reports whether a supersedes edge points into the record id.
-func superseded(st *store.Store, id string) (bool, error) {
-	edges, err := st.EdgesTouching(id)
-	if err != nil {
-		return false, fmt.Errorf("recall: text anchor: %w", err)
-	}
-	for _, e := range edges {
-		if e.Type == store.EdgeSupersedes && e.ToID == id {
-			return true, nil
-		}
-	}
-	return false, nil
+	return out, said, nil
 }
 
 // namesHandoffKind reports whether query has a word naming the handoff kind.
@@ -557,12 +544,10 @@ func annotateWith(st *store.Store, rec store.Record, workspaces []string, hs *ha
 		item.Handoff = hs
 	}
 
-	for _, e := range edges {
-		if e.Type == store.EdgeSupersedes && e.ToID == rec.ID {
-			item.Status = StatusSuperseded
-			item.SupersededByID = e.FromID
-			return item, nil
-		}
+	if by, ok := store.SupersederOf(rec.ID, edges); ok {
+		item.Status = StatusSuperseded
+		item.SupersededByID = by
+		return item, nil
 	}
 
 	if rec.ExpiresAt != nil && !rec.ExpiresAt.After(now()) {

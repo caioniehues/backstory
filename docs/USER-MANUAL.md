@@ -706,6 +706,29 @@ without `--out` writes to the same folder. `backstory status` shows a `backups:`
 automatic backups are on and the newest is more than 48 hours old, `status`, `this-week` and
 the panel show "automatic backups are failing: last ok ..." under NEEDS YOU.
 
+### embed
+
+Turns local embeddings on or off for this Device. They are off by default, and nothing touches
+your GPU until you turn them on. You point Backstory at llama.cpp's `llama-embedding` and an
+EmbeddingGemma 2 model file:
+
+```
+backstory embed                        # show: on/off, runtime, model, device
+backstory embed --on --runtime /usr/bin/llama-embedding \
+  --model ~/models/embeddinggemma-2/embeddinggemma-2-Q8_0.gguf --device 0000:03:00.0
+backstory embed --off                  # stop; vectors already made are kept
+```
+
+`--on` runs one test embed first and saves nothing if it fails. It refuses when the binary or
+the model is missing, when the output isn't 768-dimensional, and when the run fell back to the
+CPU (pass `--allow-cpu` to accept that). `--device` is the GPU's name or PCI address, as
+`llama-embedding --list-devices` names it. You need it when more than one device is listed, and
+`--on` lists them for you. Never give the `Vulkan1`-style index, because those indices change
+between boots. On success it prints the device and the fingerprint (model hash, prompt
+template, backend, dimension) and returns at once. The settings stay on this Device and never
+sync. Record text reaches the runtime only over stdin: it never goes on a command line or into
+a temporary file.
+
 ### restore
 
 Replaces your memory with a backup made by `backstory backup`. It checks the backup first (it
